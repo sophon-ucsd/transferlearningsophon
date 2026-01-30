@@ -210,9 +210,11 @@ def process_class(class_name, class_info):
                         out = model(points, features, lorentz_vectors, mask)
 
                     if isinstance(out, tuple):
-                        _, embedding = out
+                        logits, embedding = out
+                        logits_np = logits.squeeze(0).detach().cpu().numpy()
                     else:
                         embedding = out
+                        logits_np = np.zeros(10, dtype=np.float32)  # fallback
 
                     emb = embedding.squeeze(0).detach().cpu().numpy()
 
@@ -222,8 +224,9 @@ def process_class(class_name, class_info):
                             "truth_label", "label_name",
                             "jet_sdmass", "jet_mass", "jet_pt", "jet_eta", "jet_phi",
                         ]
+                        logit_cols = [f"logit_{j}" for j in range(10)]
                         emb_cols = [f"emb_{j}" for j in range(emb.shape[-1])]
-                        writer.writerow(base + emb_cols)
+                        writer.writerow(base + logit_cols + emb_cols)
                         wrote_header = True
 
                     truth_label, label_name = get_truth_label(arrays, i)
@@ -234,6 +237,7 @@ def process_class(class_name, class_info):
                         source_file, entry_index, total_written,
                         truth_label, label_name,
                         jet_sdmass, jet_mass, pt, eta, phi,
+                        *logits_np.astype(np.float32).tolist(),
                         *emb.astype(np.float32).tolist(),
                     ]
                     writer.writerow(row)
