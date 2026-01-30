@@ -1,0 +1,14 @@
+# Architecture sweep configuration
+sweep_type: arch
+emb_dir: embeddings/
+out_dir: results/arch_sweep/
+epochs: 25
+per_class_cap: 100000
+seed: 1337
+
+architectures:
+  tiny: [64]
+  small: [128, 64]
+  medium: [256, 128, 64]
+  large: [512, 256, 128, 64]
+  xlarge: [1024, 512, 256, 128]

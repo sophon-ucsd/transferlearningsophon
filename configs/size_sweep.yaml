@@ -1,0 +1,14 @@
+# Dataset size sweep configuration
+sweep_type: size
+emb_dir: embeddings/
+out_dir: results/size_sweep/
+epochs: 25
+hidden_layers: [256, 128, 64]
+seed: 1337
+
+sizes:
+  - 1000
+  - 5000
+  - 10000
+  - 50000
+  - 100000
