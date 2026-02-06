@@ -16,18 +16,16 @@ from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
 import matplotlib.pyplot as plt
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # Constants
-# ─────────────────────────────────────────────────────────────────────────────
 CLASSES_10 = [
     "HToBB", "HToCC", "HToGG", "HToWW2Q1L", "HToWW4Q",
     "TTBar", "TTBarLep", "WToQQ", "ZToQQ", "ZToNuNu",
 ]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # Data Loading
-# ─────────────────────────────────────────────────────────────────────────────
 def find_csv_for_class(emb_dir: Path, class_name: str) -> Path:
     """Find CSV file for a given class."""
     patterns = [
@@ -69,9 +67,8 @@ def softmax(x):
     return e_x / e_x.sum(axis=1, keepdims=True)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # Plotting
-# ─────────────────────────────────────────────────────────────────────────────
 def plot_roc_curves(y_true, y_prob, class_names, title, out_path):
     """Plot one-vs-rest ROC curves."""
     plt.figure(figsize=(10, 8))
@@ -95,9 +92,8 @@ def plot_roc_curves(y_true, y_prob, class_names, title, out_path):
     print(f"Saved ROC plot to {out_path}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # Main
-# ─────────────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="Evaluate baseline Sophon model")
     parser.add_argument("--emb-dir", type=str, default="embeddings/", help="Embeddings directory")

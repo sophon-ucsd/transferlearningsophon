@@ -46,7 +46,8 @@ env/
 .DS_Store
 Thumbs.db
 
-# Model artifacts (keep results, ignore large model files)
+# Model artifacts (ignore results and large model files)
+results/
 *.pt
 *.pth
 *.ckpt

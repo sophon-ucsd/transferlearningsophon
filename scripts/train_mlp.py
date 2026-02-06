@@ -22,9 +22,7 @@ from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
 import matplotlib.pyplot as plt
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Constants
-# ─────────────────────────────────────────────────────────────────────────────
 CLASSES_10 = [
     "HToBB", "HToCC", "HToGG", "HToWW2Q1L", "HToWW4Q",
     "TTBar", "TTBarLep", "WToQQ", "ZToQQ", "ZToNuNu",
@@ -32,9 +30,7 @@ CLASSES_10 = [
 EMB_PREFIX = "emb_"
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # MLP Model
-# ─────────────────────────────────────────────────────────────────────────────
 class MLPClassifier(nn.Module):
     def __init__(self, input_dim, hidden_layers, num_classes, dropout=0.1):
         super().__init__()
@@ -54,9 +50,8 @@ class MLPClassifier(nn.Module):
         return self.net(x)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # Data Loading
-# ─────────────────────────────────────────────────────────────────────────────
 def find_csv_for_class(emb_dir: Path, class_name: str) -> Path:
     """Find CSV file for a given class."""
     patterns = [
@@ -96,9 +91,8 @@ def get_logit_columns(df: pd.DataFrame) -> list:
     return sorted(cols, key=lambda x: int(x.replace("logit_", ""))) if cols else []
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # Training
-# ─────────────────────────────────────────────────────────────────────────────
 def train_one_epoch(model, loader, optimizer, criterion, device):
     model.train()
     total_loss = 0
@@ -137,9 +131,8 @@ def evaluate(model, loader, criterion, device):
     return avg_loss, acc, auc, np.array(all_labels), np.array(all_probs)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # Plotting
-# ─────────────────────────────────────────────────────────────────────────────
 def plot_roc_curves(y_true, y_prob, class_names, title, out_path):
     """Plot one-vs-rest ROC curves."""
     plt.figure(figsize=(10, 8))
@@ -163,9 +156,8 @@ def plot_roc_curves(y_true, y_prob, class_names, title, out_path):
     print(f"Saved ROC plot to {out_path}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+
 # Main
-# ─────────────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="Train MLP on Sophon embeddings")
     parser.add_argument("--emb-dir", type=str, default="embeddings/", help="Embeddings directory")

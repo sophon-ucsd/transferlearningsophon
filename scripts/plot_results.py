@@ -32,9 +32,7 @@ plt.rcParams.update({
 })
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Plot Functions
-# ─────────────────────────────────────────────────────────────────────────────
 def plot_arch_sweep(results_csv: Path, out_dir: Path):
     """Plot architecture sweep results."""
     df = pd.read_csv(results_csv)
@@ -151,9 +149,7 @@ def plot_comparison(mlp_csv: Path, baseline_csv: Path, out_dir: Path):
     print(f"Saved: {out_path}")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Main
-# ─────────────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="Generate plots from experiment results")
     parser.add_argument("--plot-type", type=str, required=True, 

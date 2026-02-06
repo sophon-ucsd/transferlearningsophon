@@ -14,13 +14,10 @@ import argparse
 import subprocess
 import sys
 from pathlib import Path
-
 import pandas as pd
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Sweep Configurations
-# ─────────────────────────────────────────────────────────────────────────────
 ARCH_SWEEP = {
     "tiny": [64],
     "small": [128, 64],
@@ -43,9 +40,7 @@ def run_command(cmd: list, verbose: bool = True):
     return result.returncode
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Sweep Functions
-# ─────────────────────────────────────────────────────────────────────────────
 def run_arch_sweep(args):
     """Run architecture sweep."""
     results = []
@@ -142,9 +137,7 @@ def run_size_sweep(args):
         print(all_results.to_string())
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Main
-# ─────────────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="Run hyperparameter sweeps")
     parser.add_argument("--sweep", type=str, required=True, choices=["arch", "size"], help="Sweep type")
