@@ -30,6 +30,16 @@ CLASSES_10 = [
 EMB_PREFIX = "emb_"
 
 
+def parse_classes(arg: str) -> list:
+    """Parse comma-separated class names, falling back to CLASSES_10."""
+    if arg is None:
+        return CLASSES_10
+    names = [c.strip() for c in arg.split(",") if c.strip()]
+    if not names:
+        return CLASSES_10
+    return names
+
+
 # MLP Model
 class MLPClassifier(nn.Module):
     def __init__(self, input_dim, hidden_layers, num_classes, dropout=0.1):
@@ -124,11 +134,16 @@ def evaluate(model, loader, criterion, device):
     
     avg_loss = total_loss / len(loader.dataset)
     acc = accuracy_score(all_labels, all_preds)
+    probs = np.array(all_probs)
     try:
-        auc = roc_auc_score(all_labels, np.array(all_probs), multi_class="ovr", average="macro")
+        if probs.shape[1] == 2:
+            # Binary: use probability of class 1
+            auc = roc_auc_score(all_labels, probs[:, 1])
+        else:
+            auc = roc_auc_score(all_labels, probs, multi_class="ovr", average="macro")
     except ValueError:
         auc = 0.0
-    return avg_loss, acc, auc, np.array(all_labels), np.array(all_probs)
+    return avg_loss, acc, auc, np.array(all_labels), probs
 
 
 
@@ -173,6 +188,8 @@ def main():
     parser.add_argument("--test-frac", type=float, default=0.15, help="Test set fraction")
     parser.add_argument("--val-frac", type=float, default=0.15, help="Validation set fraction")
     parser.add_argument("--save-model", action="store_true", help="Save model checkpoint")
+    parser.add_argument("--classes", type=str, default=None,
+                        help="Comma-separated class names (default: all 10 JetClass classes)")
     args = parser.parse_args()
 
     # Setup
@@ -188,11 +205,14 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     
     hidden_layers = [int(x) for x in args.hidden_layers.split(",")]
+    class_names = parse_classes(args.classes)
+    num_classes = len(class_names)
     print(f"Hidden layers: {hidden_layers}")
+    print(f"Classes ({num_classes}): {class_names}")
 
     # Load data
     print("Loading embeddings...")
-    df = load_embeddings(emb_dir, CLASSES_10, args.per_class_cap)
+    df = load_embeddings(emb_dir, class_names, args.per_class_cap)
     print(f"Total samples: {len(df):,}")
     
     emb_cols = get_embedding_columns(df)
@@ -226,7 +246,7 @@ def main():
     test_loader = DataLoader(test_ds, batch_size=args.batch_size)
     
     # Model
-    model = MLPClassifier(len(emb_cols), hidden_layers, len(CLASSES_10), args.dropout).to(device)
+    model = MLPClassifier(len(emb_cols), hidden_layers, num_classes, args.dropout).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     criterion = nn.CrossEntropyLoss()
     
@@ -274,7 +294,7 @@ def main():
     # Plot ROC
     arch_name = "_".join(map(str, hidden_layers))
     roc_path = out_dir / f"roc_mlp_{arch_name}.png"
-    plot_roc_curves(y_test_labels, y_test_probs, CLASSES_10, f"MLP ROC (arch={hidden_layers})", roc_path)
+    plot_roc_curves(y_test_labels, y_test_probs, class_names, f"MLP ROC (arch={hidden_layers})", roc_path)
     
     # Save model
     if args.save_model:

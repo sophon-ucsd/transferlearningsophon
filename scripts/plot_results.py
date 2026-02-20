@@ -20,7 +20,7 @@ import matplotlib
 # Use non-interactive backend for cluster
 matplotlib.use("Agg")
 
-# Style settings for publication
+# Style settings
 plt.rcParams.update({
     "font.size": 12,
     "axes.titlesize": 14,

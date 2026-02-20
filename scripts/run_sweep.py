@@ -64,7 +64,9 @@ def run_arch_sweep(args):
             "--per-class-cap", str(args.per_class_cap) if args.per_class_cap else "100000",
             "--seed", str(args.seed),
         ]
-        
+        if args.classes:
+            cmd += ["--classes", args.classes]
+
         ret = run_command(cmd)
         
         if ret == 0:
@@ -105,7 +107,9 @@ def run_size_sweep(args):
             "--per-class-cap", str(size),
             "--seed", str(args.seed),
         ]
-        
+        if args.classes:
+            cmd += ["--classes", args.classes]
+
         ret = run_command(cmd)
         
         if ret == 0:
@@ -126,6 +130,8 @@ def run_size_sweep(args):
         "--out-dir", str(Path(args.out_dir) / "baseline"),
         "--seed", str(args.seed),
     ]
+    if args.classes:
+        baseline_cmd += ["--classes", args.classes]
     run_command(baseline_cmd)
     
     # Aggregate results
@@ -147,6 +153,8 @@ def main():
     parser.add_argument("--per-class-cap", type=int, default=100000, help="Samples per class (for arch sweep)")
     parser.add_argument("--hidden-layers", type=str, default="256,128,64", help="Architecture (for size sweep)")
     parser.add_argument("--seed", type=int, default=1337, help="Random seed")
+    parser.add_argument("--classes", type=str, default=None,
+                        help="Comma-separated class names (passed to train_mlp.py / evaluate_baseline.py)")
     args = parser.parse_args()
 
     Path(args.out_dir).mkdir(parents=True, exist_ok=True)

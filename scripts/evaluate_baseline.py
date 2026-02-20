@@ -24,6 +24,16 @@ CLASSES_10 = [
 ]
 
 
+def parse_classes(arg: str) -> list:
+    """Parse comma-separated class names, falling back to CLASSES_10."""
+    if arg is None:
+        return CLASSES_10
+    names = [c.strip() for c in arg.split(",") if c.strip()]
+    if not names:
+        return CLASSES_10
+    return names
+
+
 
 # Data Loading
 def find_csv_for_class(emb_dir: Path, class_name: str) -> Path:
@@ -101,15 +111,21 @@ def main():
     parser.add_argument("--per-class-cap", type=int, default=None, help="Max samples per class")
     parser.add_argument("--test-frac", type=float, default=0.15, help="Test set fraction")
     parser.add_argument("--seed", type=int, default=1337, help="Random seed")
+    parser.add_argument("--classes", type=str, default=None,
+                        help="Comma-separated class names (default: all 10 JetClass classes)")
     args = parser.parse_args()
 
     emb_dir = Path(args.emb_dir)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    class_names = parse_classes(args.classes)
+    num_classes = len(class_names)
+    print(f"Classes ({num_classes}): {class_names}")
+
     # Load data
     print("Loading data with logits...")
-    df = load_data_with_logits(emb_dir, CLASSES_10, args.per_class_cap)
+    df = load_data_with_logits(emb_dir, class_names, args.per_class_cap)
     print(f"Total samples: {len(df):,}")
     
     logit_cols = get_logit_columns(df)
@@ -132,18 +148,21 @@ def main():
     # Compute metrics
     acc = accuracy_score(y_test, preds)
     try:
-        auc = roc_auc_score(y_test, probs, multi_class="ovr", average="macro")
+        if num_classes == 2:
+            auc = roc_auc_score(y_test, probs[:, 1])
+        else:
+            auc = roc_auc_score(y_test, probs, multi_class="ovr", average="macro")
     except ValueError:
         auc = 0.0
-    
+
     print(f"\nBaseline Sophon Results:")
     print(f"  Accuracy: {acc:.4f}")
     print(f"  AUC (macro OvR): {auc:.4f}")
-    
+
     # Per-class AUCs
     print("\n  Per-class AUC:")
     per_class_aucs = {}
-    for k, cls in enumerate(CLASSES_10):
+    for k, cls in enumerate(class_names):
         y_bin = (y_test == k).astype(int)
         if y_bin.sum() > 0:
             cls_auc = roc_auc_score(y_bin, probs[:, k])
@@ -165,7 +184,7 @@ def main():
     
     # Plot ROC
     roc_path = out_dir / "roc_baseline.png"
-    plot_roc_curves(y_test, probs, CLASSES_10, "Baseline Sophon ROC (test set)", roc_path)
+    plot_roc_curves(y_test, probs, class_names, "Baseline Sophon ROC (test set)", roc_path)
 
 
 if __name__ == "__main__":

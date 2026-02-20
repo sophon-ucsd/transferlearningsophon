@@ -2,6 +2,7 @@ import os
 import sys
 import csv
 import math
+import argparse
 import torch
 import uproot
 import numpy as np
@@ -22,6 +23,30 @@ TREE_NAME = "tree"
 ROOT_DIR = "val_5M"
 OUTPUT_DIR = "embeddings"
 SKIP_IF_EXISTS = False
+
+# ---------------------------------------------------------------------------
+# The 17 derived Sophon input features (matches pretrained model's input_dim)
+# ---------------------------------------------------------------------------
+SOPHON_FEATURE_NAMES = [
+    "part_pt_scale_log",
+    "part_e_scale_log",
+    "part_logptrel",
+    "part_logerel",
+    "part_deltaR",
+    "part_charge",
+    "part_isChargedHadron",
+    "part_isNeutralHadron",
+    "part_isPhoton",
+    "part_isElectron",
+    "part_isMuon",
+    "part_d0",
+    "part_d0err",
+    "part_dz",
+    "part_dzerr",
+    "part_deta",
+    "part_dphi",
+]
+NUM_SOPHON_FEATURES = len(SOPHON_FEATURE_NAMES)  # 17
 
 JET_CLASSES = {
     "HToBB": {
@@ -78,8 +103,6 @@ scalar_keys_for_model = [
     "jet_pt", "jet_eta", "jet_phi",
     "jet_energy", "jet_nparticles", "jet_sdmass",
     "jet_tau1", "jet_tau2", "jet_tau3", "jet_tau4",
-    "aux_genpart_eta", "aux_genpart_phi", "aux_genpart_pid", "aux_genpart_pt",
-    "aux_truth_match",
 ]
 
 label_keys = [
@@ -88,65 +111,134 @@ label_keys = [
     "label_Tbqq", "label_Tbl",
 ]
 
-scalar_keys = label_keys + scalar_keys_for_model
-pf_keys = particle_keys + scalar_keys
+pf_keys = particle_keys + label_keys + scalar_keys_for_model
 
 label_names = ["QCD", "Hbb", "Hcc", "Hgg", "H4q", "Hqql", "Zqq", "Wqq", "Tbqq", "Tbl"]
 
 class DummyDataConfig:
-    input_dicts = {"pf_features": list(range(37))}
+    input_dicts = {"pf_features": list(range(NUM_SOPHON_FEATURES))}
     input_names = ["pf_points"]
-    input_shapes = {"pf_points": (MAX_PART, 37)}
+    input_shapes = {"pf_points": (MAX_PART, NUM_SOPHON_FEATURES)}
     label_names = ["label"]
     num_classes = 10
 
-data_config = DummyDataConfig()
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def _norm(x, subtract, multiply, clip_lo=-5.0, clip_hi=5.0):
+    """Apply (x - subtract) * multiply then clip to [clip_lo, clip_hi]."""
+    return np.clip((x - subtract) * multiply, clip_lo, clip_hi)
 
-print(f"Loading model on {device}...")
-model, _ = get_model(data_config, num_classes=data_config.num_classes, export_embed=True)
-model.eval().to(device)
-print("Model loaded")
 
-TRUTHLIKE_SCALARS = {
-    "aux_genpart_eta", "aux_genpart_phi", "aux_genpart_pid", "aux_genpart_pt", "aux_truth_match"
-}
+def compute_sophon_features(arrays, i, keep_idx=None):
+    """Derive the 17 Sophon input features from raw particle arrays.
 
-def build_pf_tensor(arrays, i):
+    Preprocessing matches the official JetClassII_full.yaml config exactly:
+      - momentum/energy logs are computed from jet_pt*500-scaled values
+      - 5 kinematic features are shift/scale normalised then clipped to [-5,5]
+      - d0 / dz use tanh transform;  d0err / dzerr are clipped to [0,1]
+
+    Returns an (n_part, 17) float32 array.
+    """
+    get = (lambda k: arrays[k][i][keep_idx]) if keep_idx is not None else (lambda k: arrays[k][i])
+
+    px = get("part_px")
+    py = get("part_py")
+    energy = get("part_energy")
+
+    jet_pt_val = float(arrays["jet_pt"][i])
+    jet_energy_val = float(arrays["jet_energy"][i])
+
+    eps = 1e-20
+    scale = max(jet_pt_val * 500.0, eps)
+
+    # Scaled kinematics (official: part_*_scale = part_* / (jet_pt * 500))
+    pt = np.sqrt(px ** 2 + py ** 2)
+    pt_scale = pt / scale
+    energy_scale = energy / scale
+
+    # Logarithmic features with normalization (subtract, multiply, clip)
+    pt_scale_log = _norm(np.log(np.clip(pt_scale, eps, None)),
+                         subtract=1.7, multiply=0.7)
+    e_scale_log  = _norm(np.log(np.clip(energy_scale, eps, None)),
+                         subtract=2.0, multiply=0.7)
+    logptrel     = _norm(np.log(np.clip(pt / max(jet_pt_val, eps), eps, None)),
+                         subtract=-4.7, multiply=0.7)
+    logerel      = _norm(np.log(np.clip(energy / max(jet_energy_val, eps), eps, None)),
+                         subtract=-4.7, multiply=0.7)
+
+    deta = get("part_deta")
+    dphi = get("part_dphi")
+    deltaR = _norm(np.sqrt(deta ** 2 + dphi ** 2),
+                   subtract=0.2, multiply=4.0)
+
+    # Impact parameters: tanh transform for d0/dz, clip [0,1] for errors
+    d0    = np.tanh(get("part_d0val"))
+    d0err = np.clip(get("part_d0err"), 0.0, 1.0)
+    dz    = np.tanh(get("part_dzval"))
+    dzerr = np.clip(get("part_dzerr"), 0.0, 1.0)
+
+    feats = np.stack([
+        pt_scale_log,
+        e_scale_log,
+        logptrel,
+        logerel,
+        deltaR,
+        get("part_charge"),
+        get("part_isChargedHadron"),
+        get("part_isNeutralHadron"),
+        get("part_isPhoton"),
+        get("part_isElectron"),
+        get("part_isMuon"),
+        d0,
+        d0err,
+        dz,
+        dzerr,
+        deta,
+        dphi,
+    ], axis=1).astype(np.float32)
+
+    return feats
+
+
+def build_pf_tensor(arrays, i, device):
+    """Build (points, features, lorentz_vectors, mask) for one jet."""
     n_part = arrays["part_px"][i].shape[0]
 
     if n_part > MAX_PART:
         px = arrays["part_px"][i]
         py = arrays["part_py"][i]
         pt = np.sqrt(px * px + py * py)
-        keep_idx = np.argsort(pt)[::-1][:MAX_PART]  # keep in descending pT order
+        keep_idx = np.argsort(pt)[::-1][:MAX_PART]
         n_part = MAX_PART
-        particle_feats = [arrays[k][i][keep_idx] for k in particle_keys]
     else:
-        particle_feats = [arrays[k][i] for k in particle_keys]
+        keep_idx = None
 
-    label_padding = [np.zeros(n_part, dtype=np.float32) for _ in range(len(label_keys))]
+    get = (lambda k: arrays[k][i][keep_idx]) if keep_idx is not None else (lambda k: arrays[k][i])
 
-    scalar_feats = []
-    for k in scalar_keys_for_model:
-        if k in TRUTHLIKE_SCALARS:
-            scalar_feats.append(np.zeros(n_part, dtype=np.float32))
-        else:
-            scalar_feats.append(np.full(n_part, arrays[k][i], dtype=np.float32))
+    # Scaled Lorentz 4-vectors: part_*_scale = part_* / (jet_pt * 500)
+    jet_pt_val = float(arrays["jet_pt"][i])
+    scale = max(jet_pt_val * 500.0, 1e-20)
+    lv = np.stack([
+        get("part_px") / scale,
+        get("part_py") / scale,
+        get("part_pz") / scale,
+        get("part_energy") / scale,
+    ], axis=1).astype(np.float32)
 
-    all_feats = particle_feats + label_padding + scalar_feats
-    pf_features = np.stack(all_feats, axis=1).astype(np.float32)
+    # 17 derived Sophon features — shape (n_part, 17)
+    sophon_feats = compute_sophon_features(arrays, i, keep_idx)
 
-    padded = np.zeros((MAX_PART, pf_features.shape[1]), dtype=np.float32)
-    padded[:n_part, :] = pf_features
+    # Pad to MAX_PART
+    lv_padded = np.zeros((MAX_PART, 4), dtype=np.float32)
+    lv_padded[:n_part] = lv
 
-    jet_tensor = torch.tensor(padded, dtype=torch.float32).unsqueeze(0).to(device)
-    lorentz_vectors = jet_tensor[:, :, 0:4].transpose(1, 2)
-    features = jet_tensor[:, :, 4:].transpose(1, 2)
+    feat_padded = np.zeros((MAX_PART, NUM_SOPHON_FEATURES), dtype=np.float32)
+    feat_padded[:n_part] = sophon_feats
 
-    mask = (jet_tensor[:, :, 3] != 0).unsqueeze(1)  # energy channel
-    points = None
-    return points, features, lorentz_vectors, mask
+    # Tensors — model expects (batch, channels, particles)
+    lv_tensor = torch.tensor(lv_padded).unsqueeze(0).transpose(1, 2).to(device)
+    feat_tensor = torch.tensor(feat_padded).unsqueeze(0).transpose(1, 2).to(device)
+    mask = torch.tensor(lv_padded[:, 3] != 0, dtype=torch.bool).unsqueeze(0).unsqueeze(1).to(device)
+
+    return None, feat_tensor, lv_tensor, mask
 
 def get_truth_label(arrays, i):
     labs = np.array([arrays[k][i] for k in label_keys])
@@ -165,7 +257,7 @@ def jet_masses(arrays, i):
     m2 = max(E * E - (px * px + py * py + pz * pz), 0.0)
     return jet_sdmass, math.sqrt(m2), pt, eta, phi
 
-def process_class(class_name, class_info):
+def process_class(class_name, class_info, model, device):
     output_path = os.path.join(OUTPUT_DIR, class_info["output"])
 
     if SKIP_IF_EXISTS and os.path.exists(output_path) and os.path.getsize(output_path) > 100:
@@ -204,7 +296,7 @@ def process_class(class_name, class_info):
                     break
 
                 try:
-                    points, features, lorentz_vectors, mask = build_pf_tensor(arrays, i)
+                    points, features, lorentz_vectors, mask = build_pf_tensor(arrays, i, device)
 
                     with torch.no_grad():
                         out = model(points, features, lorentz_vectors, mask)
@@ -254,6 +346,34 @@ def process_class(class_name, class_info):
     return total_written
 
 def main():
+    parser = argparse.ArgumentParser(description="JetClass Sophon inference & embedding extraction")
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="Path to pretrained model.pt weights file. "
+                             "If omitted, runs with random-init weights (baseline).")
+    args = parser.parse_args()
+
+    data_config = DummyDataConfig()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    print(f"Loading model on {device}...")
+    model, _ = get_model(data_config, num_classes=data_config.num_classes, export_embed=True)
+
+    if args.checkpoint:
+        ckpt_path = Path(args.checkpoint)
+        if not ckpt_path.exists():
+            sys.exit(f"Checkpoint not found: {ckpt_path}")
+        state = torch.load(str(ckpt_path), map_location=device)
+        # Handle both raw state_dict and wrapped checkpoint formats
+        if "model_state_dict" in state:
+            state = state["model_state_dict"]
+        model.load_state_dict(state, strict=False)
+        print(f"Loaded pretrained weights from {ckpt_path}")
+    else:
+        print("No --checkpoint provided; using random-init weights")
+
+    model.eval().to(device)
+    print("Model ready")
+
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     print("JetClass embedding generator")
@@ -265,7 +385,7 @@ def main():
 
     total_events = 0
     for class_name, class_info in JET_CLASSES.items():
-        total_events += process_class(class_name, class_info)
+        total_events += process_class(class_name, class_info, model, device)
 
     print(f"Done. Total events written: {total_events:,}")
     print(f"Outputs in: {OUTPUT_DIR}/")
