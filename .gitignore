@@ -1,7 +1,6 @@
 # Data files - too large for GitHub
 val_5M/
 embeddings/
-networks/
 *.root
 
 # Python
