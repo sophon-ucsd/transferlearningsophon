@@ -20,7 +20,7 @@ TARGET_EVENTS_PER_CLASS = 100_000
 MAX_PART = 128
 STEP_SIZE = 5000
 TREE_NAME = "tree"
-ROOT_DIR = "val_5M"
+ROOT_DIR = "data/val_5M"
 OUTPUT_DIR = "embeddings"
 SKIP_IF_EXISTS = False
 
@@ -147,21 +147,22 @@ def compute_sophon_features(arrays, i, keep_idx=None):
     jet_energy_val = float(arrays["jet_energy"][i])
 
     eps = 1e-20
-    scale = max(jet_pt_val * 500.0, eps)
+    jet_pt_safe = max(jet_pt_val, eps)
+    jet_energy_safe = max(jet_energy_val, eps)
 
-    # Scaled kinematics (official: part_*_scale = part_* / (jet_pt * 500))
+    # Scaled kinematics (official: part_*_scale = part_* * 500 / jet_pt)
     pt = np.sqrt(px ** 2 + py ** 2)
-    pt_scale = pt / scale
-    energy_scale = energy / scale
+    pt_scale = pt * 500.0 / jet_pt_safe
+    energy_scale = energy * 500.0 / jet_pt_safe
 
     # Logarithmic features with normalization (subtract, multiply, clip)
     pt_scale_log = _norm(np.log(np.clip(pt_scale, eps, None)),
                          subtract=1.7, multiply=0.7)
     e_scale_log  = _norm(np.log(np.clip(energy_scale, eps, None)),
                          subtract=2.0, multiply=0.7)
-    logptrel     = _norm(np.log(np.clip(pt / max(jet_pt_val, eps), eps, None)),
+    logptrel     = _norm(np.log(np.clip(pt / jet_pt_safe, eps, None)),
                          subtract=-4.7, multiply=0.7)
-    logerel      = _norm(np.log(np.clip(energy / max(jet_energy_val, eps), eps, None)),
+    logerel      = _norm(np.log(np.clip(energy / jet_energy_safe, eps, None)),
                          subtract=-4.7, multiply=0.7)
 
     deta = get("part_deta")
@@ -213,14 +214,14 @@ def build_pf_tensor(arrays, i, device):
 
     get = (lambda k: arrays[k][i][keep_idx]) if keep_idx is not None else (lambda k: arrays[k][i])
 
-    # Scaled Lorentz 4-vectors: part_*_scale = part_* / (jet_pt * 500)
+    # Scaled Lorentz 4-vectors: part_*_scale = part_* * 500 / jet_pt
     jet_pt_val = float(arrays["jet_pt"][i])
-    scale = max(jet_pt_val * 500.0, 1e-20)
+    jet_pt_safe = max(jet_pt_val, 1e-20)
     lv = np.stack([
-        get("part_px") / scale,
-        get("part_py") / scale,
-        get("part_pz") / scale,
-        get("part_energy") / scale,
+        get("part_px") * 500.0 / jet_pt_safe,
+        get("part_py") * 500.0 / jet_pt_safe,
+        get("part_pz") * 500.0 / jet_pt_safe,
+        get("part_energy") * 500.0 / jet_pt_safe,
     ], axis=1).astype(np.float32)
 
     # 17 derived Sophon features — shape (n_part, 17)
@@ -257,7 +258,7 @@ def jet_masses(arrays, i):
     m2 = max(E * E - (px * px + py * py + pz * pz), 0.0)
     return jet_sdmass, math.sqrt(m2), pt, eta, phi
 
-def process_class(class_name, class_info, model, device):
+def process_class(class_name, class_info, model, device, num_classes=10):
     output_path = os.path.join(OUTPUT_DIR, class_info["output"])
 
     if SKIP_IF_EXISTS and os.path.exists(output_path) and os.path.getsize(output_path) > 100:
@@ -278,7 +279,7 @@ def process_class(class_name, class_info, model, device):
         it = uproot.iterate(
             paths,
             expressions=pf_keys,
-            entry_step=STEP_SIZE,
+            step_size=STEP_SIZE,
             library="np",
             report=True,
         )
@@ -306,7 +307,7 @@ def process_class(class_name, class_info, model, device):
                         logits_np = logits.squeeze(0).detach().cpu().numpy()
                     else:
                         embedding = out
-                        logits_np = np.zeros(10, dtype=np.float32)  # fallback
+                        logits_np = np.zeros(num_classes, dtype=np.float32)
 
                     emb = embedding.squeeze(0).detach().cpu().numpy()
 
@@ -316,7 +317,7 @@ def process_class(class_name, class_info, model, device):
                             "truth_label", "label_name",
                             "jet_sdmass", "jet_mass", "jet_pt", "jet_eta", "jet_phi",
                         ]
-                        logit_cols = [f"logit_{j}" for j in range(10)]
+                        logit_cols = [f"logit_{j}" for j in range(logits_np.shape[0])]
                         emb_cols = [f"emb_{j}" for j in range(emb.shape[-1])]
                         writer.writerow(base + logit_cols + emb_cols)
                         wrote_header = True
@@ -355,19 +356,37 @@ def main():
     data_config = DummyDataConfig()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    print(f"Loading model on {device}...")
-    model, _ = get_model(data_config, num_classes=data_config.num_classes, export_embed=True)
+    # --- Load checkpoint (if any) and detect num_classes ---
+    num_classes = 10  # default for random-init
+    checkpoint_state = None
 
     if args.checkpoint:
         ckpt_path = Path(args.checkpoint)
         if not ckpt_path.exists():
             sys.exit(f"Checkpoint not found: {ckpt_path}")
-        state = torch.load(str(ckpt_path), map_location=device)
-        # Handle both raw state_dict and wrapped checkpoint formats
-        if "model_state_dict" in state:
-            state = state["model_state_dict"]
-        model.load_state_dict(state, strict=False)
-        print(f"Loaded pretrained weights from {ckpt_path}")
+        raw = torch.load(str(ckpt_path), map_location=device)
+        checkpoint_state = raw["model_state_dict"] if "model_state_dict" in raw else raw
+        # Detect num_classes from FC layer weight shape
+        for key in ["mod.fc.0.weight", "fc.0.weight"]:
+            if key in checkpoint_state:
+                num_classes = checkpoint_state[key].shape[0]
+                print(f"Detected num_classes={num_classes} from checkpoint")
+                break
+
+    # --- Create model with correct num_classes ---
+    print(f"Loading model on {device} (num_classes={num_classes})...")
+    model, _ = get_model(data_config, num_classes=num_classes, export_embed=True)
+
+    if checkpoint_state is not None:
+        # Try loading; if keys lack 'mod.' prefix, remap them
+        missing, unexpected = model.load_state_dict(checkpoint_state, strict=False)
+        if len(unexpected) > 0 and all(not k.startswith("mod.") for k in checkpoint_state):
+            remapped = {"mod." + k: v for k, v in checkpoint_state.items()}
+            missing, unexpected = model.load_state_dict(remapped, strict=False)
+            print(f"Remapped checkpoint keys (added 'mod.' prefix)")
+        loaded = len(checkpoint_state) - len(unexpected)
+        print(f"Loaded pretrained weights from {ckpt_path} "
+              f"({loaded} params loaded, {len(missing)} missing, {len(unexpected)} unexpected)")
     else:
         print("No --checkpoint provided; using random-init weights")
 
@@ -385,7 +404,7 @@ def main():
 
     total_events = 0
     for class_name, class_info in JET_CLASSES.items():
-        total_events += process_class(class_name, class_info, model, device)
+        total_events += process_class(class_name, class_info, model, device, num_classes)
 
     print(f"Done. Total events written: {total_events:,}")
     print(f"Outputs in: {OUTPUT_DIR}/")

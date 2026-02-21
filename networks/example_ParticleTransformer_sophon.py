@@ -6,7 +6,6 @@ from collections import defaultdict, Counter
 from weaver.utils.logger import _logger
 from weaver.nn.model.ParticleTransformer import ParticleTransformer
 
-# Lazy imports — only needed for training/evaluation functions below
 def _lazy_imports():
     import awkward as ak
     import tqdm
@@ -17,22 +16,13 @@ def _lazy_imports():
     from weaver.utils.nn.tools import _flatten_preds, _flatten_label, _concat
     return ak, tqdm, m, mpl, plt, _flatten_preds, _flatten_label, _concat
 
-'''
-Link to the full model implementation:
-https://github.com/hqucms/weaver-core/blob/main/weaver/nn/model/ParticleTransformer.py
-
-Compatibility note:
-  weaver-core 0.4.17 has a monolithic forward() method.
-  Newer versions may have _forward_encoder / _forward_aggregator.
-  This wrapper handles both cases.
-'''
+# full model: https://github.com/hqucms/weaver-core/blob/main/weaver/nn/model/ParticleTransformer.py
 
 class ParticleTransformerSophonWrapper(torch.nn.Module):
     def __init__(self, **kwargs) -> None:
         super().__init__()
         self.export_embed = kwargs.pop('export_embed', False)
         self.mod = ParticleTransformer(**kwargs)
-        # Detect API: newer weaver-core exposes _forward_encoder/_forward_aggregator
         self._has_split_forward = hasattr(self.mod, '_forward_encoder')
 
     @torch.jit.ignore
@@ -40,36 +30,29 @@ class ParticleTransformerSophonWrapper(torch.nn.Module):
         return {'mod.cls_token', }
 
     def _forward_compat(self, features, lorentz_vectors, mask):
-        """Manual encoder + aggregator for weaver-core <= 0.4.17
-        which only has a monolithic forward() and no _forward_encoder."""
+        """Fallback for older weaver-core without split forward API."""
         mod = self.mod
         with torch.cuda.amp.autocast(enabled=mod.use_amp):
-            # --- Padding mask (True = padded/ignored) ---
             padding_mask = ~mask.squeeze(1) if mask is not None else None
 
-            # --- Pair embedding (PairEmbed takes raw 4-vectors directly) ---
             if lorentz_vectors is not None and mod.pair_embed is not None:
                 attn_mask = mod.pair_embed(lorentz_vectors)
             else:
                 attn_mask = None
 
-            # --- Input embedding + mask out padded positions ---
             x = mod.embed(features)
             if mask is not None:
                 x = x.masked_fill(~mask.permute(2, 0, 1), 0)
 
-            # --- Transformer encoder blocks ---
             for block in mod.blocks:
                 x = block(x, x_cls=None, padding_mask=padding_mask, attn_mask=attn_mask)
 
-            # --- CLS-token aggregator blocks ---
-            cls_tokens = mod.cls_token.expand(x.size(0), -1, -1)
+            cls_tokens = mod.cls_token.expand(-1, x.size(1), -1)
             for block in mod.cls_blocks:
                 cls_tokens = block(x, x_cls=cls_tokens, padding_mask=padding_mask)
 
-            x_cls = cls_tokens.squeeze(1)
+            x_cls = cls_tokens.squeeze(0)
 
-            # --- Layer norm ---
             if hasattr(mod, 'norm') and mod.norm is not None:
                 x_cls = mod.norm(x_cls)
 
@@ -77,12 +60,10 @@ class ParticleTransformerSophonWrapper(torch.nn.Module):
 
     def forward(self, points, features, lorentz_vectors, mask):
         if self._has_split_forward:
-            # Newer weaver-core (>= 0.5) with split API
             x, padding_mask = self.mod._forward_encoder(features, v=lorentz_vectors, mask=mask)
             with torch.cuda.amp.autocast(enabled=self.mod.use_amp):
                 x_cls = self.mod._forward_aggregator(x, padding_mask)
         else:
-            # Older weaver-core (0.4.17) — manual computation
             x_cls = self._forward_compat(features, lorentz_vectors, mask)
 
         with torch.cuda.amp.autocast(enabled=self.mod.use_amp):
@@ -103,7 +84,6 @@ def get_model(data_config, **kwargs):
     cfg = dict(
         input_dim=len(data_config.input_dicts['pf_features']),
         num_classes=None,
-        # network configurations
         pair_input_dim=4,
         use_pre_activation_pair=True,
         embed_dims=[128, 512, 128],
@@ -115,7 +95,6 @@ def get_model(data_config, **kwargs):
         cls_block_params={'dropout': 0, 'attn_dropout': 0, 'activation_dropout': 0},
         fc_params=[],
         activation='gelu',
-        # misc
         trim=True,
         for_inference=False,
     )
@@ -146,8 +125,7 @@ def get_evaluate_fn(data_config, **kwargs):
     return evaluate_classification_sophon
 
 
-# Customized training and evaluation functions for Sophon
-# functions are adapted from https://github.com/hqucms/weaver-core/blob/main/weaver/utils/nn/tools.py
+# training and evaluation adapted from weaver-core/weaver/utils/nn/tools.py
 
 def train_classification_sophon(
         model, loss_func, opt, scheduler, train_loader, dev, epoch, steps_per_epoch=None, grad_scaler=None,
@@ -166,7 +144,7 @@ def train_classification_sophon(
     with tqdm.tqdm(train_loader) as tq:
         for X, y, _ in tq:
             inputs = [X[k].to(dev) for k in data_config.input_names]
-            label = y[data_config.label_names[0]].long().to(dev) # label is obtained from inputs
+            label = y[data_config.label_names[0]].long().to(dev)
             entry_count += label.shape[0]
             opt.zero_grad()
             with torch.cuda.amp.autocast(enabled=grad_scaler is not None):
@@ -217,7 +195,6 @@ def train_classification_sophon(
             ("Acc/train (epoch)", total_correct / count, epoch),
         ])
 
-        # update the batch state
         tb_helper.batch_train_count += num_batches
 
     if scheduler and not getattr(scheduler, '_update_per_step', False):
@@ -245,7 +222,7 @@ def evaluate_classification_sophon(model, test_loader, dev, epoch, for_training=
     with torch.no_grad():
         with tqdm.tqdm(test_loader) as tq:
             for X, y, Z in tq:
-                # X, y: torch.Tensor; Z: ak.Array
+
                 inputs = [X[k].to(dev) for k in data_config.input_names]
                 label = y[data_config.label_names[0]].long().to(dev)
                 entry_count += label.shape[0]
@@ -294,19 +271,19 @@ def evaluate_classification_sophon(model, test_loader, dev, epoch, for_training=
     scores = np.concatenate(scores)
     labels = {k: _concat(v) for k, v in labels.items()}
 
-    # customized evaluation: making ROC curves for tensorboard monitoring
+    # ROC curves for tensorboard
     if tb_helper:
         scores_dict = {
             'Xbb': scores[:, 0],
             'Xcc': scores[:, 1],
-            'QCD': np.sum(scores[:, 161:188], axis=1), # sum of the last 27 scores to form the QCD score
+            'QCD': np.sum(scores[:, 161:188], axis=1),
         }
         flag_dict = {
             'Xbb': labels['truth_label'] == 0,
             'Xcc': labels['truth_label'] == 1,
             'QCD': (labels['truth_label'] >= 161) & (labels['truth_label'] < 188),
         }
-        comp_list = [('Xbb', 'QCD'), ('Xcc', 'QCD'), ('Xcc', 'Xbb')] # ROC curves for A vs B
+        comp_list = [('Xbb', 'QCD'), ('Xcc', 'QCD'), ('Xcc', 'Xbb')]
         bkgrej = {}
 
         f, ax = plt.subplots(figsize=(5, 5))
@@ -320,15 +297,14 @@ def evaluate_classification_sophon(model, test_loader, dev, epoch, for_training=
                 np.concatenate([discr_sig, discr_bkg])
             )
             ax.plot(tpr, fpr, label='%s vs %s (AUC=%.4f)' % (name_sig, name_bkg, m.auc(fpr, tpr)))
-            bkgrej[(name_sig, name_bkg)] = np.interp(0.3, tpr, 1. / np.maximum(fpr, 1e-10)) # bkgrej at eff_sig=30%
+            bkgrej[(name_sig, name_bkg)] = np.interp(0.3, tpr, 1. / np.maximum(fpr, 1e-10))
         ax.legend()
         ax.set_xlabel('True positive rate (signal eff.)', ha='right', x=1.0); ax.set_ylabel('False positive rate (BKG eff.)', ha='right', y=1.0)
         ax.set_xlim(0, 1); ax.set_ylim(1e-4, 1), ax.set_yscale('log')
 
-        # write ROC curve figure
         tb_helper.writer.add_figure('ROC/%s/epoch%s' % (tb_mode, str(epoch).zfill(4)), f)
 
-        # write bkgrej values
+
         for name_sig, name_bkg in comp_list:
             tb_helper.write_scalars([
                 ('BkgRej_%s_vs_%s/%s (epoch)' % (name_sig, name_bkg, tb_mode), bkgrej[(name_sig, name_bkg)], epoch),
@@ -338,7 +314,7 @@ def evaluate_classification_sophon(model, test_loader, dev, epoch, for_training=
     if for_training:
         return total_correct / count
     else:
-        # convert 2D labels/scores
+
         if len(scores) != entry_count:
             if len(labels_counts):
                 labels_counts = np.concatenate(labels_counts)

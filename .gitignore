@@ -1,4 +1,5 @@
 # Data files - too large for GitHub
+data/
 val_5M/
 embeddings/
 *.root

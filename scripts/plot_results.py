@@ -120,7 +120,7 @@ def plot_comparison(mlp_csv: Path, baseline_csv: Path, out_dir: Path):
     x = [0, 1]
     values = [baseline_acc, mlp_acc]
     colors = ["gray", "steelblue"]
-    labels = ["Baseline Sophon", "MLP Head"]
+    labels = ["Linear Probe", "MLP Head"]
     bars = ax.bar(x, values, color=colors, alpha=0.8)
     ax.set_xticks(x)
     ax.set_xticklabels(labels)

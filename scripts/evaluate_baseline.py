@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-Evaluate baseline Sophon model (using pre-computed logits, no MLP).
+Evaluate baseline: linear probing on Sophon embeddings.
+
+Trains a logistic regression (linear probe) on frozen Sophon embeddings
+to evaluate representation quality without a deep MLP head.
 
 Example:
     python scripts/evaluate_baseline.py --emb-dir embeddings/ --out-dir results/
@@ -12,6 +15,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, roc_auc_score, roc_curve
 import matplotlib.pyplot as plt
 
@@ -50,8 +55,8 @@ def find_csv_for_class(emb_dir: Path, class_name: str) -> Path:
     raise FileNotFoundError(f"No CSV found for {class_name} in {emb_dir}")
 
 
-def load_data_with_logits(emb_dir: Path, class_names: list, per_class_cap: int = None):
-    """Load embeddings with logit columns."""
+def load_data(emb_dir: Path, class_names: list, per_class_cap: int = None):
+    """Load embeddings from CSV files."""
     rows = []
     for idx, cls in enumerate(class_names):
         fp = find_csv_for_class(emb_dir, cls)
@@ -63,18 +68,12 @@ def load_data_with_logits(emb_dir: Path, class_names: list, per_class_cap: int =
     return pd.concat(rows, ignore_index=True)
 
 
-def get_logit_columns(df: pd.DataFrame) -> list:
-    """Get logit column names."""
-    cols = [c for c in df.columns if c.startswith("logit_")]
+def get_embedding_columns(df: pd.DataFrame) -> list:
+    """Get embedding column names."""
+    cols = [c for c in df.columns if c.startswith("emb_")]
     if not cols:
-        raise ValueError("No logit columns found. Run inference_all_classes.py first.")
-    return sorted(cols, key=lambda x: int(x.replace("logit_", "")))
-
-
-def softmax(x):
-    """Apply softmax to logits."""
-    e_x = np.exp(x - np.max(x, axis=1, keepdims=True))
-    return e_x / e_x.sum(axis=1, keepdims=True)
+        raise ValueError("No embedding columns found. Run inference_all_classes.py first.")
+    return sorted(cols, key=lambda x: int(x.replace("emb_", "")))
 
 
 
@@ -89,7 +88,7 @@ def plot_roc_curves(y_true, y_prob, class_names, title, out_path):
         fpr, tpr, _ = roc_curve(y_bin, y_prob[:, k])
         auc_score = roc_auc_score(y_bin, y_prob[:, k])
         plt.plot(fpr, tpr, label=f"{cls} (AUC={auc_score:.4f})")
-    
+
     plt.plot([0, 1], [0, 1], "k--", alpha=0.3)
     plt.xlabel("False Positive Rate")
     plt.ylabel("True Positive Rate")
@@ -105,7 +104,7 @@ def plot_roc_curves(y_true, y_prob, class_names, title, out_path):
 
 # Main
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate baseline Sophon model")
+    parser = argparse.ArgumentParser(description="Evaluate baseline via linear probing on Sophon embeddings")
     parser.add_argument("--emb-dir", type=str, default="embeddings/", help="Embeddings directory")
     parser.add_argument("--out-dir", type=str, default="results/", help="Output directory")
     parser.add_argument("--per-class-cap", type=int, default=None, help="Max samples per class")
@@ -124,27 +123,39 @@ def main():
     print(f"Classes ({num_classes}): {class_names}")
 
     # Load data
-    print("Loading data with logits...")
-    df = load_data_with_logits(emb_dir, class_names, args.per_class_cap)
+    print("Loading embeddings...")
+    df = load_data(emb_dir, class_names, args.per_class_cap)
     print(f"Total samples: {len(df):,}")
-    
-    logit_cols = get_logit_columns(df)
-    print(f"Found {len(logit_cols)} logit columns")
-    
-    logits = df[logit_cols].values.astype(np.float32)
+
+    emb_cols = get_embedding_columns(df)
+    print(f"Embedding dimension: {len(emb_cols)}")
+
+    X = df[emb_cols].values.astype(np.float32)
     labels = df["label"].values
-    
-    # Split (same as MLP training for fair comparison)
-    _, logits_test, _, y_test = train_test_split(
-        logits, labels, test_size=args.test_frac, stratify=labels, random_state=args.seed
+
+    # Split (same seed/frac as MLP training for fair comparison)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, labels, test_size=args.test_frac, stratify=labels, random_state=args.seed
     )
-    
-    print(f"Test samples: {len(logits_test):,}")
-    
-    # Convert logits to probabilities
-    probs = softmax(logits_test)
-    preds = probs.argmax(axis=1)
-    
+
+    print(f"Train: {len(X_train):,}, Test: {len(X_test):,}")
+
+    # Standardize
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_test = scaler.transform(X_test)
+
+    # Linear probe (logistic regression)
+    print("Training logistic regression (linear probe)...")
+    clf = LogisticRegression(
+        max_iter=1000, solver='lbfgs',
+        random_state=args.seed
+    )
+    clf.fit(X_train, y_train)
+
+    probs = clf.predict_proba(X_test)
+    preds = clf.predict(X_test)
+
     # Compute metrics
     acc = accuracy_score(y_test, preds)
     try:
@@ -155,7 +166,7 @@ def main():
     except ValueError:
         auc = 0.0
 
-    print(f"\nBaseline Sophon Results:")
+    print(f"\nBaseline Linear Probe Results:")
     print(f"  Accuracy: {acc:.4f}")
     print(f"  AUC (macro OvR): {auc:.4f}")
 
@@ -168,23 +179,23 @@ def main():
             cls_auc = roc_auc_score(y_bin, probs[:, k])
             per_class_aucs[cls] = cls_auc
             print(f"    {cls}: {cls_auc:.4f}")
-    
+
     # Save results
     results = {
-        "model": "baseline_sophon",
+        "model": "baseline_linear_probe",
         "per_class_cap": args.per_class_cap or "all",
         "test_acc": acc,
         "test_auc_macro_ovr": auc,
         **{f"auc_{cls}": v for cls, v in per_class_aucs.items()}
     }
-    
+
     results_file = out_dir / "baseline_results.csv"
     pd.DataFrame([results]).to_csv(results_file, index=False)
     print(f"\nSaved results to {results_file}")
-    
+
     # Plot ROC
     roc_path = out_dir / "roc_baseline.png"
-    plot_roc_curves(y_test, probs, class_names, "Baseline Sophon ROC (test set)", roc_path)
+    plot_roc_curves(y_test, probs, class_names, "Baseline Linear Probe ROC (test set)", roc_path)
 
 
 if __name__ == "__main__":

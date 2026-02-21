@@ -13,35 +13,31 @@ spec:
         args:
           - |
             echo "Cloning the repository..."
-            git clone https://github.com/sophon-ucsd/transferlearningsophon.git
+            git clone https://github.com/raunavm/transferlearningsophon.git
             cd transferlearningsophon
 
             echo "Installing missing dependencies..."
-            pip install uproot awkward numpy tqdm
+            pip install uproot awkward numpy tqdm scikit-learn pandas matplotlib
 
             echo "Linking JetClass dataset..."
-            mkdir -p data/JetClass
-            ln -s /workspace/data/jetclass2 data/JetClass/val_5M
+            mkdir -p data
+            ln -s /workspace/data/jetclass2 data/val_5M
 
-            # Download pretrained weights from HuggingFace (too large for GitHub)
+            # download pretrained weights (too large for git)
             echo "Downloading pretrained Sophon weights..."
             mkdir -p models/JetClassII_Sophon
             curl -fSL -o models/JetClassII_Sophon/model.pt \
               "https://huggingface.co/jet-universe/sophon/resolve/main/models/JetClassII_Sophon/model.pt"
             echo "Downloaded model.pt ($(du -h models/JetClassII_Sophon/model.pt | cut -f1))"
 
-            # -----------------------------------------------------------------
-            # PRETRAINED INFERENCE
-            # -----------------------------------------------------------------
-            echo "===== Step 1: Pretrained Inference ====="
+            # pretrained inference
+            echo "Running pretrained inference..."
             python inference_all_classes.py \
               --checkpoint models/JetClassII_Sophon/model.pt
             mv embeddings embeddings_pretrained
 
-            # -----------------------------------------------------------------
-            # PRETRAINED SWEEP (MLP + baseline evaluation)
-            # -----------------------------------------------------------------
-            echo "===== Step 2: Pretrained Sweep ====="
+            # pretrained sweeps (arch + size, baseline runs as part of size sweep)
+            echo "Running pretrained sweeps..."
             python scripts/run_sweep.py \
               --sweep arch \
               --emb-dir embeddings_pretrained/ \
@@ -52,21 +48,13 @@ spec:
               --emb-dir embeddings_pretrained/ \
               --out-dir results/pretrained/size_sweep/
 
-            python scripts/evaluate_baseline.py \
-              --emb-dir embeddings_pretrained/ \
-              --out-dir results/pretrained/
-
-            # -----------------------------------------------------------------
-            # RANDOM-INIT INFERENCE (no --checkpoint = random weights)
-            # -----------------------------------------------------------------
-            echo "===== Step 3: Random-Init Inference ====="
+            # random-init inference (no checkpoint = random weights)
+            echo "Running random-init inference..."
             python inference_all_classes.py
             mv embeddings embeddings_random
 
-            # -----------------------------------------------------------------
-            # RANDOM-INIT SWEEP
-            # -----------------------------------------------------------------
-            echo "===== Step 4: Random-Init Sweep ====="
+            # random-init sweeps
+            echo "Running random-init sweeps..."
             python scripts/run_sweep.py \
               --sweep arch \
               --emb-dir embeddings_random/ \
@@ -77,29 +65,21 @@ spec:
               --emb-dir embeddings_random/ \
               --out-dir results/random_init/size_sweep/
 
-            python scripts/evaluate_baseline.py \
-              --emb-dir embeddings_random/ \
-              --out-dir results/random_init/
-
-            # -----------------------------------------------------------------
-            # COMPARISON PLOTS
-            # -----------------------------------------------------------------
-            echo "===== Step 5: Comparison Plots ====="
+            # comparison plots
+            echo "Generating comparison plots..."
             python scripts/plot_results.py \
               --plot-type comparison \
-              --mlp-results results/pretrained/arch_sweep/arch_sweep_results.csv \
-              --baseline-results results/random_init/arch_sweep/arch_sweep_results.csv \
+              --mlp-results results/pretrained/arch_sweep/medium/train_results.csv \
+              --baseline-results results/pretrained/size_sweep/baseline/baseline_results.csv \
               --out-dir results/comparison/
 
-            echo "Saving results to Persistent Volume..."
+            # save everything to the persistent volume
+            echo "Saving results to PV..."
             cp -r embeddings_pretrained /workspace/data/
             cp -r embeddings_random /workspace/data/
             cp -r results /workspace/data/
 
-            echo "===== ALL DONE ====="
-            echo "Pretrained results:  results/pretrained/"
-            echo "Random-init results: results/random_init/"
-            echo "Comparison plots:    results/comparison/"
+            echo "Done!"
         volumeMounts:
         - name: data-volume
           mountPath: /workspace/data
