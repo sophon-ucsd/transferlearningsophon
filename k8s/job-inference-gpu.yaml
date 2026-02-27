@@ -13,6 +13,7 @@ spec:
         command: ["/bin/bash", "-lc"]
         args:
           - |
+            set -e
             echo "Cloning the repository..."
             git clone https://github.com/raunavm/transferlearningsophon.git
             cd transferlearningsophon
@@ -33,42 +34,42 @@ spec:
 
             # pretrained inference
             echo "Running pretrained inference..."
-            python inference_all_classes.py \
+            python3 inference_all_classes.py \
               --checkpoint models/JetClassII_Sophon/model.pt
             mv embeddings embeddings_pretrained
 
             # pretrained sweeps (arch + size, baseline runs as part of size sweep)
             echo "Running pretrained sweeps..."
-            python scripts/run_sweep.py \
+            python3 scripts/run_sweep.py \
               --sweep arch \
               --emb-dir embeddings_pretrained/ \
               --out-dir results/pretrained/arch_sweep/
 
-            python scripts/run_sweep.py \
+            python3 scripts/run_sweep.py \
               --sweep size \
               --emb-dir embeddings_pretrained/ \
               --out-dir results/pretrained/size_sweep/
 
             # random-init inference (no checkpoint = random weights)
             echo "Running random-init inference..."
-            python inference_all_classes.py
+            python3 inference_all_classes.py
             mv embeddings embeddings_random
 
             # random-init sweeps
             echo "Running random-init sweeps..."
-            python scripts/run_sweep.py \
+            python3 scripts/run_sweep.py \
               --sweep arch \
               --emb-dir embeddings_random/ \
               --out-dir results/random_init/arch_sweep/
 
-            python scripts/run_sweep.py \
+            python3 scripts/run_sweep.py \
               --sweep size \
               --emb-dir embeddings_random/ \
               --out-dir results/random_init/size_sweep/
 
             # comparison plots
             echo "Generating comparison plots..."
-            python scripts/plot_results.py \
+            python3 scripts/plot_results.py \
               --plot-type comparison \
               --mlp-results results/pretrained/arch_sweep/medium/train_results.csv \
               --baseline-results results/pretrained/size_sweep/baseline/baseline_results.csv \
