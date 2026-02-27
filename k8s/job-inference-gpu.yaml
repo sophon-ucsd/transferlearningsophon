@@ -22,7 +22,7 @@ spec:
 
             echo "Linking JetClass dataset..."
             mkdir -p data
-            ln -s /data/jetclass2 data/val_5M
+            ln -s /data/JetClass2 data/val_5M
 
             # download pretrained weights (too large for git)
             echo "Downloading pretrained Sophon weights..."
