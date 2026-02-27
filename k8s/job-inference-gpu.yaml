@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: sophon-inference-job
+  name: rm-sophon-inference-job
   namespace: cms-ml
 spec:
   backoffLimit: 1
@@ -22,7 +22,7 @@ spec:
 
             echo "Linking JetClass dataset..."
             mkdir -p data
-            ln -s /data/JetClass2 data/val_5M
+            ln -s /data/JetClass/Pythia/val_5M data/val_5M
 
             # download pretrained weights (too large for git)
             echo "Downloading pretrained Sophon weights..."
