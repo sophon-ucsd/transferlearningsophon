@@ -2,14 +2,15 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: sophon-inference-job
+  namespace: cms-ml
 spec:
   backoffLimit: 1
   template:
     spec:
       containers:
-      - name: sophon-runner
+      - name: shell
         image: gitlab-registry.nrp-nautilus.io/escheuller/transfer-learning:cu121
-        command: ["/bin/bash", "-c"]
+        command: ["/bin/bash", "-lc"]
         args:
           - |
             echo "Cloning the repository..."
@@ -21,7 +22,7 @@ spec:
 
             echo "Linking JetClass dataset..."
             mkdir -p data
-            ln -s /workspace/data/jetclass2 data/val_5M
+            ln -s /data/jetclass2 data/val_5M
 
             # download pretrained weights (too large for git)
             echo "Downloading pretrained Sophon weights..."
@@ -75,14 +76,14 @@ spec:
 
             # save everything to the persistent volume
             echo "Saving results to PV..."
-            cp -r embeddings_pretrained /workspace/data/
-            cp -r embeddings_random /workspace/data/
-            cp -r results /workspace/data/
+            cp -r embeddings_pretrained /data/
+            cp -r embeddings_random /data/
+            cp -r results /data/
 
             echo "Done!"
         volumeMounts:
-        - name: data-volume
-          mountPath: /workspace/data
+        - mountPath: /data
+          name: pvc
         resources:
           limits:
             memory: "16Gi"
@@ -94,6 +95,6 @@ spec:
             nvidia.com/gpu: "1"
       restartPolicy: Never
       volumes:
-      - name: data-volume
+      - name: pvc
         persistentVolumeClaim:
           claimName: transfer-learning-vol
