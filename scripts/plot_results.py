@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate publication-quality plots from experiment results.
+Generate plots from experiment results.
 
 Examples:
     python scripts/plot_results.py --plot-type arch_sweep --results-csv results/arch_sweep_results.csv

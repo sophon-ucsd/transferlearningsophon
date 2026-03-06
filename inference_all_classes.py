@@ -1,6 +1,7 @@
 import os
 import sys
 import csv
+import json
 import math
 import argparse
 import torch
@@ -16,17 +17,11 @@ if str(THIS_DIR) not in sys.path:
 
 from networks.example_ParticleTransformer_sophon import get_model
 
-TARGET_EVENTS_PER_CLASS = 100_000
 MAX_PART = 128
 STEP_SIZE = 5000
 TREE_NAME = "tree"
-ROOT_DIR = "data/val_5M"
-OUTPUT_DIR = "embeddings"
-SKIP_IF_EXISTS = False
 
-# ---------------------------------------------------------------------------
 # The 17 derived Sophon input features (matches pretrained model's input_dim)
-# ---------------------------------------------------------------------------
 SOPHON_FEATURE_NAMES = [
     "part_pt_scale_log",
     "part_e_scale_log",
@@ -48,48 +43,28 @@ SOPHON_FEATURE_NAMES = [
 ]
 NUM_SOPHON_FEATURES = len(SOPHON_FEATURE_NAMES)  # 17
 
-JET_CLASSES = {
-    "HToBB": {
-        "files": ["HToBB_120.root", "HToBB_121.root", "HToBB_122.root", "HToBB_123.root", "HToBB_124.root"],
-        "output": "HToBB_inference_with_embedding.csv"
-    },
-    "HToCC": {
-        "files": ["HToCC_120.root", "HToCC_121.root", "HToCC_122.root", "HToCC_123.root", "HToCC_124.root"],
-        "output": "HToCC_inference_with_embedding.csv"
-    },
-    "HToGG": {
-        "files": ["HToGG_120.root", "HToGG_121.root", "HToGG_122.root", "HToGG_123.root", "HToGG_124.root"],
-        "output": "HToGG_inference_with_embedding.csv"
-    },
-    "HToWW4Q": {
-        "files": ["HToWW4Q_120.root", "HToWW4Q_121.root", "HToWW4Q_122.root", "HToWW4Q_123.root", "HToWW4Q_124.root"],
-        "output": "HToWW4Q_inference_with_embedding.csv"
-    },
-    "HToWW2Q1L": {
-        "files": ["HToWW2Q1L_120.root", "HToWW2Q1L_121.root", "HToWW2Q1L_122.root", "HToWW2Q1L_123.root", "HToWW2Q1L_124.root"],
-        "output": "HToWW2Q1L_inference_with_embedding.csv"
-    },
-    "ZToQQ": {
-        "files": ["ZToQQ_120.root", "ZToQQ_121.root", "ZToQQ_122.root", "ZToQQ_123.root", "ZToQQ_124.root"],
-        "output": "ZToQQ_inference_with_embedding.csv"
-    },
-    "WToQQ": {
-        "files": ["WToQQ_120.root", "WToQQ_121.root", "WToQQ_122.root", "WToQQ_123.root", "WToQQ_124.root"],
-        "output": "WToQQ_inference_with_embedding.csv"
-    },
-    "TTBar": {
-        "files": ["TTBar_120.root", "TTBar_121.root", "TTBar_122.root", "TTBar_123.root", "TTBar_124.root"],
-        "output": "TTBar_inference_with_embedding.csv"
-    },
-    "TTBarLep": {
-        "files": ["TTBarLep_120.root", "TTBarLep_121.root", "TTBarLep_122.root", "TTBarLep_123.root", "TTBarLep_124.root"],
-        "output": "TTBarLep_inference_with_embedding.csv"
-    },
-    "ZJetsToNuNu": {
-        "files": ["ZJetsToNuNu_120.root", "ZJetsToNuNu_121.root", "ZJetsToNuNu_122.root", "ZJetsToNuNu_123.root", "ZJetsToNuNu_124.root"],
-        "output": "ZToNuNu_inference_with_embedding.csv"
-    },
-}
+def discover_classes(root_dir):
+    """Auto-discover jet classes from .root files in the given directory."""
+    root_path = Path(root_dir)
+    if not root_path.is_dir():
+        sys.exit(f"Root directory not found: {root_dir}")
+
+    files_by_class = {}
+    for f in sorted(root_path.glob("*.root")):
+        parts = f.stem.rsplit("_", 1)
+        if len(parts) != 2 or not parts[1].isdigit():
+            print(f"Warning: skipping unrecognized file {f.name}")
+            continue
+        files_by_class.setdefault(parts[0], []).append(f.name)
+
+    for cls in files_by_class:
+        files_by_class[cls].sort(key=lambda x: int(x.rsplit("_", 1)[1].replace(".root", "")))
+
+    print(f"Discovered {len(files_by_class)} classes in {root_dir}:")
+    for cls, flist in sorted(files_by_class.items()):
+        print(f"  {cls}: {len(flist)} files")
+
+    return files_by_class
 
 particle_keys = [
     "part_px", "part_py", "part_pz", "part_energy",
@@ -258,23 +233,34 @@ def jet_masses(arrays, i):
     m2 = max(E * E - (px * px + py * py + pz * pz), 0.0)
     return jet_sdmass, math.sqrt(m2), pt, eta, phi
 
-def process_class(class_name, class_info, model, device, num_classes=10):
-    output_path = os.path.join(OUTPUT_DIR, class_info["output"])
+def process_class(class_name, root_files, root_dir, output_dir, target_events,
+                   model, device, num_classes=10, skip_existing=False, fmt="csv"):
+    if fmt == "npy":
+        output_path = os.path.join(output_dir, f"{class_name}_embeddings.npy")
+    else:
+        output_path = os.path.join(output_dir, f"{class_name}_inference_with_embedding.csv")
 
-    if SKIP_IF_EXISTS and os.path.exists(output_path) and os.path.getsize(output_path) > 100:
+    if skip_existing and os.path.exists(output_path) and os.path.getsize(output_path) > 100:
         print(f"Skipping {class_name} (exists): {output_path}")
-        return 0
+        return 0, np.array([]), np.array([]), np.array([])
 
     print(f"\nProcessing {class_name}")
 
-    root_files = class_info["files"]
     total_written = 0
     wrote_header = False
-    target = TARGET_EVENTS_PER_CLASS
+    target = target_events if target_events > 0 else None
+    emb_list = [] if fmt == "npy" else None
 
-    with open(output_path, "w", newline="") as csvfile:
-        writer = csv.writer(csvfile)
-        paths = [f"{os.path.join(ROOT_DIR, fn)}:{TREE_NAME}" for fn in root_files]
+    # Accumulate raw Sophon predictions for baseline evaluation
+    all_preds = []   # argmax of logits
+    all_truths = []  # truth label index
+    all_probs = []   # softmax probabilities (for AUC)
+
+    csvfile = open(output_path, "w", newline="") if fmt == "csv" else None
+    writer = csv.writer(csvfile) if csvfile else None
+
+    try:
+        paths = [f"{os.path.join(root_dir, fn)}:{TREE_NAME}" for fn in root_files]
 
         it = uproot.iterate(
             paths,
@@ -311,29 +297,41 @@ def process_class(class_name, class_info, model, device, num_classes=10):
 
                     emb = embedding.squeeze(0).detach().cpu().numpy()
 
-                    if not wrote_header:
-                        base = [
-                            "source_file", "entry_index", "row_index",
-                            "truth_label", "label_name",
-                            "jet_sdmass", "jet_mass", "jet_pt", "jet_eta", "jet_phi",
-                        ]
-                        logit_cols = [f"logit_{j}" for j in range(logits_np.shape[0])]
-                        emb_cols = [f"emb_{j}" for j in range(emb.shape[-1])]
-                        writer.writerow(base + logit_cols + emb_cols)
-                        wrote_header = True
-
+                    # Track raw Sophon predictions for baseline eval
                     truth_label, label_name = get_truth_label(arrays, i)
-                    jet_sdmass, jet_mass, pt, eta, phi = jet_masses(arrays, i)
-                    entry_index = int(batch_start_entry + i)
+                    pred_label = int(np.argmax(logits_np))
+                    all_preds.append(pred_label)
+                    all_truths.append(truth_label)
+                    # Compute softmax in-place to avoid storing raw logits
+                    exp_l = np.exp(logits_np - logits_np.max())
+                    all_probs.append((exp_l / exp_l.sum()).astype(np.float16))
 
-                    row = [
-                        source_file, entry_index, total_written,
-                        truth_label, label_name,
-                        jet_sdmass, jet_mass, pt, eta, phi,
-                        *logits_np.astype(np.float32).tolist(),
-                        *emb.astype(np.float32).tolist(),
-                    ]
-                    writer.writerow(row)
+                    if fmt == "npy":
+                        emb_list.append(emb.astype(np.float16))
+                    else:
+                        if not wrote_header:
+                            base = [
+                                "source_file", "entry_index", "row_index",
+                                "truth_label", "label_name",
+                                "jet_sdmass", "jet_mass", "jet_pt", "jet_eta", "jet_phi",
+                            ]
+                            logit_cols = [f"logit_{j}" for j in range(logits_np.shape[0])]
+                            emb_cols = [f"emb_{j}" for j in range(emb.shape[-1])]
+                            writer.writerow(base + logit_cols + emb_cols)
+                            wrote_header = True
+
+                        jet_sdmass, jet_mass, pt, eta, phi = jet_masses(arrays, i)
+                        entry_index = int(batch_start_entry + i)
+
+                        row = [
+                            source_file, entry_index, total_written,
+                            truth_label, label_name,
+                            jet_sdmass, jet_mass, pt, eta, phi,
+                            *logits_np.astype(np.float32).tolist(),
+                            *emb.astype(np.float32).tolist(),
+                        ]
+                        writer.writerow(row)
+
                     total_written += 1
 
                 except Exception as e:
@@ -343,15 +341,39 @@ def process_class(class_name, class_info, model, device, num_classes=10):
             if target is not None and total_written >= target:
                 break
 
+    finally:
+        if csvfile:
+            csvfile.close()
+
+    if fmt == "npy" and emb_list:
+        np.save(output_path, np.stack(emb_list))
+
     print(f"{class_name}: saved {total_written:,} rows -> {output_path}")
-    return total_written
+    return total_written, np.array(all_preds), np.array(all_truths), np.array(all_probs)
+
+
 
 def main():
     parser = argparse.ArgumentParser(description="JetClass Sophon inference & embedding extraction")
     parser.add_argument("--checkpoint", type=str, default=None,
                         help="Path to pretrained model.pt weights file. "
                              "If omitted, runs with random-init weights (baseline).")
+    parser.add_argument("--root-dir", type=str, default="data/val_5M",
+                        help="Directory containing .root files (auto-discovers classes)")
+    parser.add_argument("--events-per-class", type=int, default=100_000,
+                        help="Target events per class (0 = all available)")
+    parser.add_argument("--output-dir", type=str, default="embeddings",
+                        help="Directory for output CSV files")
+    parser.add_argument("--skip-existing", action="store_true",
+                        help="Skip classes whose output CSV already exists")
+    parser.add_argument("--format", type=str, default="csv", choices=["csv", "npy"],
+                        help="Output format: csv (full, ~1.8KB/event) or npy (embeddings only, ~256B/event)")
     args = parser.parse_args()
+
+    # --- Discover classes from root dir ---
+    classes = discover_classes(args.root_dir)
+    if not classes:
+        sys.exit(f"No .root files found in {args.root_dir}")
 
     data_config = DummyDataConfig()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -393,21 +415,81 @@ def main():
     model.eval().to(device)
     print("Model ready")
 
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    os.makedirs(args.output_dir, exist_ok=True)
 
+    epc_str = str(args.events_per_class) if args.events_per_class > 0 else "ALL"
     print("JetClass embedding generator")
-    print(f"classes: {len(JET_CLASSES)}")
-    print(f"events per class: {TARGET_EVENTS_PER_CLASS if TARGET_EVENTS_PER_CLASS else 'ALL'}")
-    print(f"root dir: {ROOT_DIR}")
-    print(f"out dir: {OUTPUT_DIR}")
-    print(f"skip existing: {SKIP_IF_EXISTS}")
+    print(f"classes: {len(classes)}")
+    print(f"events per class: {epc_str}")
+    print(f"root dir: {args.root_dir}")
+    print(f"out dir: {args.output_dir}")
+    print(f"skip existing: {args.skip_existing}")
+    print(f"format: {args.format}")
 
     total_events = 0
-    for class_name, class_info in JET_CLASSES.items():
-        total_events += process_class(class_name, class_info, model, device, num_classes)
+    all_preds = []
+    all_truths = []
+    all_probs = []
 
-    print(f"Done. Total events written: {total_events:,}")
-    print(f"Outputs in: {OUTPUT_DIR}/")
+    for class_name, file_list in sorted(classes.items()):
+        n_written, preds, truths, probs = process_class(
+            class_name, file_list, args.root_dir, args.output_dir,
+            args.events_per_class, model, device, num_classes,
+            skip_existing=args.skip_existing, fmt=args.format,
+        )
+        total_events += n_written
+        if len(preds) > 0:
+            all_preds.append(preds)
+            all_truths.append(truths)
+            all_probs.append(probs)
+
+    print(f"\nDone. Total events written: {total_events:,}")
+    print(f"Outputs in: {args.output_dir}/")
+
+    # --- Raw Sophon baseline evaluation ---
+    if len(all_preds) > 0:
+        preds = np.concatenate(all_preds)
+        truths = np.concatenate(all_truths)
+        probs = np.concatenate(all_probs).astype(np.float32)
+
+        acc = float(np.mean(preds == truths))
+        print(f"\n{'='*50}")
+        print(f"RAW SOPHON BASELINE (zero-shot transfer)")
+        print(f"{'='*50}")
+        print(f"  Total events evaluated: {len(truths):,}")
+        print(f"  Overall accuracy: {acc:.4f}")
+
+        # Per-class accuracy
+        unique_labels = sorted(set(truths))
+        per_class = {}
+        for lab in unique_labels:
+            mask = truths == lab
+            cls_acc = float(np.mean(preds[mask] == truths[mask]))
+            cls_name = label_names[lab] if lab < len(label_names) else f"class_{lab}"
+            per_class[cls_name] = {"accuracy": cls_acc, "count": int(mask.sum())}
+            print(f"  {cls_name}: acc={cls_acc:.4f} (n={mask.sum():,})")
+
+        # Macro AUC (one-vs-rest)
+        try:
+            from sklearn.metrics import roc_auc_score
+            auc = roc_auc_score(truths, probs, multi_class="ovr", average="macro")
+            print(f"  Macro AUC (OvR): {auc:.4f}")
+        except Exception as e:
+            auc = None
+            print(f"  AUC computation failed: {e}")
+
+        # Save baseline metrics
+        baseline_results = {
+            "model": "raw_sophon_pretrained",
+            "total_events": len(truths),
+            "accuracy": acc,
+            "auc_macro_ovr": auc,
+            "per_class": per_class,
+        }
+        metrics_path = os.path.join(args.output_dir, "raw_sophon_baseline.json")
+        with open(metrics_path, "w") as f:
+            json.dump(baseline_results, f, indent=2)
+        print(f"\n  Baseline metrics saved to {metrics_path}")
 
 if __name__ == "__main__":
     main()
