@@ -15,6 +15,7 @@ spec:
           - |
             set -e
             START_TIME=$(date +%s)
+            TAG=$(date +%d_%H%M%S)_100M
 
             git clone https://github.com/raunavm/transferlearningsophon.git
             cd transferlearningsophon
@@ -36,9 +37,11 @@ spec:
               --patience 10 \
               2>&1 | tee size_sweep_log.txt
 
-            mkdir -p /data/results
-            cp -r results/size_sweep /data/results/
-            cp size_sweep_log.txt /data/results/size_sweep/
+            OUTPUT_DIR="/data/results/size_sweep_${TAG}"
+            mkdir -p "$OUTPUT_DIR"
+            cp -r results/size_sweep/* "$OUTPUT_DIR/"
+            cp size_sweep_log.txt "$OUTPUT_DIR/"
+            echo "Output saved to: $OUTPUT_DIR"
 
             END_TIME=$(date +%s)
             ELAPSED=$(( END_TIME - START_TIME ))

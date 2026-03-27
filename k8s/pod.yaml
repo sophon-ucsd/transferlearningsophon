@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: rm-sophon-pod
+  name: raunav-sophon-pod
   namespace: cms-ml
 spec:
   restartPolicy: Never
@@ -14,13 +14,11 @@ spec:
       name: pvc
     resources:
       limits:
-        memory: "16Gi"
-        cpu: "4"
-        nvidia.com/gpu: "1"
-      requests:
-        memory: "8Gi"
+        memory: "4Gi"
         cpu: "2"
-        nvidia.com/gpu: "1"
+      requests:
+        memory: "2Gi"
+        cpu: "1"
   volumes:
   - name: pvc
     persistentVolumeClaim:

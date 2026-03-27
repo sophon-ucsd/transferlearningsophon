@@ -233,6 +233,22 @@ def jet_masses(arrays, i):
     m2 = max(E * E - (px * px + py * py + pz * pz), 0.0)
     return jet_sdmass, math.sqrt(m2), pt, eta, phi
 
+NPY_FLUSH_INTERVAL = 500_000  # flush embeddings to disk every 500K events
+
+
+def _flush_npy(emb_list, output_path, first_flush):
+    """Append embeddings to an NPY file on disk, clearing the in-memory list."""
+    if not emb_list:
+        return
+    chunk = np.stack(emb_list)
+    if first_flush or not os.path.exists(output_path):
+        np.save(output_path, chunk)
+    else:
+        existing = np.load(output_path)
+        np.save(output_path, np.concatenate([existing, chunk], axis=0))
+    emb_list.clear()
+
+
 def process_class(class_name, root_files, root_dir, output_dir, target_events,
                    model, device, num_classes=10, skip_existing=False, fmt="csv"):
     if fmt == "npy":
@@ -250,6 +266,7 @@ def process_class(class_name, root_files, root_dir, output_dir, target_events,
     wrote_header = False
     target = target_events if target_events > 0 else None
     emb_list = [] if fmt == "npy" else None
+    first_flush = True
 
     # Accumulate raw Sophon predictions for baseline evaluation
     all_preds = []   # argmax of logits
@@ -308,6 +325,11 @@ def process_class(class_name, root_files, root_dir, output_dir, target_events,
 
                     if fmt == "npy":
                         emb_list.append(emb.astype(np.float16))
+                        # Periodically flush to disk to avoid OOM on large datasets
+                        if len(emb_list) >= NPY_FLUSH_INTERVAL:
+                            _flush_npy(emb_list, output_path, first_flush)
+                            first_flush = False
+                            print(f"  {class_name}: flushed {total_written + 1:,} embeddings to disk")
                     else:
                         if not wrote_header:
                             base = [
@@ -345,8 +367,9 @@ def process_class(class_name, root_files, root_dir, output_dir, target_events,
         if csvfile:
             csvfile.close()
 
+    # Flush any remaining embeddings
     if fmt == "npy" and emb_list:
-        np.save(output_path, np.stack(emb_list))
+        _flush_npy(emb_list, output_path, first_flush)
 
     print(f"{class_name}: saved {total_written:,} rows -> {output_path}")
     return total_written, np.array(all_preds), np.array(all_truths), np.array(all_probs)

@@ -14,6 +14,9 @@ spec:
         args:
           - |
             set -e
+            TAG=$(date +%d_%H%M%S)_5M
+            echo "Run tag: $TAG"
+
             echo "Cloning the repository..."
             git clone https://github.com/raunavm/transferlearningsophon.git
             cd transferlearningsophon
@@ -75,13 +78,13 @@ spec:
               --baseline-results results/pretrained/size_sweep/baseline/baseline_results.csv \
               --out-dir results/comparison/
 
-            # save everything to the persistent volume
+            # save everything to the persistent volume with unique tag
             echo "Saving results to PV..."
-            cp -r embeddings_pretrained /data/
-            cp -r embeddings_random /data/
-            cp -r results /data/
+            cp -r embeddings_pretrained "/data/embeddings_pretrained_${TAG}"
+            cp -r embeddings_random "/data/embeddings_random_${TAG}"
+            cp -r results "/data/results_${TAG}"
 
-            echo "Done!"
+            echo "Done! Outputs tagged: $TAG"
         volumeMounts:
         - mountPath: /data
           name: pvc

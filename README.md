@@ -29,7 +29,7 @@ pip install -r requirements.txt
 
 ## Data
 
-The full training set (`train_100M`) is available on the Nautilus PVC at `/data/JetClass/Pythia/train_100M/`. It contains 100 ROOT files per class (~100M events/class, 1B total).
+The full training set (`train_100M`) is available on the Nautilus PVC at `/data/JetClass/Pythia/train_100M/`. It contains 100 ROOT files per class (~10M events/class, 100M total).
 
 For local development, download the smaller validation set (~5M events) from https://zenodo.org/records/6619768:
 
@@ -138,7 +138,7 @@ python3 scripts/run_sweep.py --sweep size \
   --patience 10
 ```
 
-Sizes per class: 10K, 100K, 1M, 10M, 100M (100K to 1B total events).
+Sizes per class: 10K, 100K, 1M, 10M (100K to 100M total events).
 
 ## Running on Nautilus (Kubernetes)
 
@@ -148,7 +148,7 @@ The pipeline is split into 3 jobs for parallel execution by multiple team member
 
 ### Job 1: Inference (everyone runs this)
 
-Extracts all 1B embeddings from `train_100M` as NPY and computes the raw Sophon baseline.
+Extracts all 100M embeddings from `train_100M` as NPY and computes the raw Sophon baseline.
 
 ```sh
 kubectl apply -f k8s/job-1-inference.yaml

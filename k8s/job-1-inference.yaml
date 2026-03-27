@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: sophon-inference-YOUR_INITIALS
+  name: sophon-inference-raunav
   namespace: cms-ml
 spec:
   backoffLimit: 1
@@ -15,6 +15,7 @@ spec:
           - |
             set -e
             START_TIME=$(date +%s)
+            TAG=$(date +%d_%H%M%S)_100M
 
             git clone https://github.com/raunavm/transferlearningsophon.git
             cd transferlearningsophon
@@ -36,8 +37,10 @@ spec:
               --format npy \
               2>&1 | tee inference_log.txt
 
-            cp -r embeddings_pretrained_full /data/
-            cp inference_log.txt /data/embeddings_pretrained_full/
+            OUTPUT_DIR="/data/embeddings_pretrained_full_${TAG}"
+            cp -r embeddings_pretrained_full "$OUTPUT_DIR"
+            cp inference_log.txt "$OUTPUT_DIR/"
+            echo "Output saved to: $OUTPUT_DIR"
 
             END_TIME=$(date +%s)
             ELAPSED=$(( END_TIME - START_TIME ))
