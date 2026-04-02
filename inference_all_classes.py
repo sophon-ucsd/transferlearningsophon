@@ -357,6 +357,8 @@ def process_class(class_name, root_files, root_dir, output_dir, target_events,
                     total_written += 1
 
                 except Exception as e:
+                    if total_written == 0:
+                        raise RuntimeError(f"First event failed — aborting: {e}") from e
                     pbar.set_postfix_str(f"err: {e}")
                     continue
 

@@ -36,7 +36,7 @@ class ParticleTransformerSophonWrapper(torch.nn.Module):
             padding_mask = ~mask.squeeze(1) if mask is not None else None
 
             if lorentz_vectors is not None and mod.pair_embed is not None:
-                attn_mask = mod.pair_embed(lorentz_vectors)
+                attn_mask = mod.pair_embed(lorentz_vectors).view(-1, lorentz_vectors.size(-1), lorentz_vectors.size(-1))
             else:
                 attn_mask = None
 
