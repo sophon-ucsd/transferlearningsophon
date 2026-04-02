@@ -19,6 +19,7 @@ from networks.example_ParticleTransformer_sophon import get_model
 
 MAX_PART = 128
 STEP_SIZE = 5000
+BATCH_SIZE = 128  # number of jets to run through the model at once
 TREE_NAME = "tree"
 
 # The 17 derived Sophon input features (matches pretrained model's input_dim)
@@ -216,6 +217,51 @@ def build_pf_tensor(arrays, i, device):
 
     return None, feat_tensor, lv_tensor, mask
 
+def build_pf_tensor_batch(arrays, indices, device):
+    """Build batched (features, lorentz_vectors, mask) for multiple jets at once."""
+    B = len(indices)
+    feat_batch = np.zeros((B, MAX_PART, NUM_SOPHON_FEATURES), dtype=np.float32)
+    lv_batch = np.zeros((B, MAX_PART, 4), dtype=np.float32)
+    mask_batch = np.zeros((B, MAX_PART), dtype=bool)
+
+    for b, i in enumerate(indices):
+        n_part = arrays["part_px"][i].shape[0]
+
+        if n_part > MAX_PART:
+            px = arrays["part_px"][i]
+            py = arrays["part_py"][i]
+            pt = np.sqrt(px * px + py * py)
+            keep_idx = np.argsort(pt)[::-1][:MAX_PART]
+            n_part = MAX_PART
+        else:
+            keep_idx = None
+
+        get = (lambda k, ki=keep_idx: arrays[k][i][ki]) if keep_idx is not None else (lambda k: arrays[k][i])
+
+        jet_pt_val = float(arrays["jet_pt"][i])
+        jet_pt_safe = max(jet_pt_val, 1e-20)
+
+        lv = np.stack([
+            get("part_px") * 500.0 / jet_pt_safe,
+            get("part_py") * 500.0 / jet_pt_safe,
+            get("part_pz") * 500.0 / jet_pt_safe,
+            get("part_energy") * 500.0 / jet_pt_safe,
+        ], axis=1).astype(np.float32)
+
+        sophon_feats = compute_sophon_features(arrays, i, keep_idx)
+
+        lv_batch[b, :n_part] = lv
+        feat_batch[b, :n_part] = sophon_feats
+        mask_batch[b, :n_part] = True
+
+    # Model expects (batch, channels, particles)
+    feat_tensor = torch.from_numpy(feat_batch).permute(0, 2, 1).to(device)
+    lv_tensor = torch.from_numpy(lv_batch).permute(0, 2, 1).to(device)
+    mask_tensor = torch.from_numpy(mask_batch).unsqueeze(1).to(device)
+
+    return None, feat_tensor, lv_tensor, mask_tensor
+
+
 def get_truth_label(arrays, i):
     labs = np.array([arrays[k][i] for k in label_keys])
     y = int(np.argmax(labs))
@@ -263,7 +309,6 @@ def process_class(class_name, root_files, root_dir, output_dir, target_events,
     print(f"\nProcessing {class_name}")
 
     total_written = 0
-    wrote_header = False
     target = target_events if target_events > 0 else None
     emb_list = [] if fmt == "npy" else None
     first_flush = True
@@ -275,6 +320,7 @@ def process_class(class_name, root_files, root_dir, output_dir, target_events,
 
     csvfile = open(output_path, "w", newline="") if fmt == "csv" else None
     writer = csv.writer(csvfile) if csvfile else None
+    wrote_header = False
 
     try:
         paths = [f"{os.path.join(root_dir, fn)}:{TREE_NAME}" for fn in root_files]
@@ -289,47 +335,54 @@ def process_class(class_name, root_files, root_dir, output_dir, target_events,
 
         for batch_idx, (arrays, report) in enumerate(it):
             batch_len = len(arrays["jet_pt"])
-
             source_file = os.path.basename(getattr(report, "file_path", "unknown"))
             batch_start_entry = getattr(report, "entry_start", 0)
 
-            pbar = tqdm(range(batch_len), desc=f"{class_name} batch {batch_idx}", leave=False)
-
-            for i in pbar:
+            # Process in GPU batches
+            for chunk_start in tqdm(range(0, batch_len, BATCH_SIZE),
+                                    desc=f"{class_name} batch {batch_idx}",
+                                    leave=False):
+                chunk_end = min(chunk_start + BATCH_SIZE, batch_len)
                 if target is not None and total_written >= target:
                     break
 
+                indices = list(range(chunk_start, chunk_end))
+                # Trim if we'd exceed target
+                if target is not None and total_written + len(indices) > target:
+                    indices = indices[:target - total_written]
+
                 try:
-                    points, features, lorentz_vectors, mask = build_pf_tensor(arrays, i, device)
+                    points, features, lorentz_vectors, mask = build_pf_tensor_batch(arrays, indices, device)
 
                     with torch.no_grad():
                         out = model(points, features, lorentz_vectors, mask)
 
                     if isinstance(out, tuple):
-                        logits, embedding = out
-                        logits_np = logits.squeeze(0).detach().cpu().numpy()
+                        logits_batch, embedding_batch = out
+                        logits_np = logits_batch.detach().cpu().numpy()
                     else:
-                        embedding = out
-                        logits_np = np.zeros(num_classes, dtype=np.float32)
+                        embedding_batch = out
+                        logits_np = np.zeros((len(indices), num_classes), dtype=np.float32)
 
-                    emb = embedding.squeeze(0).detach().cpu().numpy()
+                    emb_np = embedding_batch.detach().cpu().numpy()
 
-                    # Track raw Sophon predictions for baseline eval
+                except Exception as e:
+                    if total_written == 0:
+                        raise RuntimeError(f"First batch failed — aborting: {e}") from e
+                    print(f"  {class_name}: skipping chunk at {chunk_start} — {e}")
+                    continue
+
+                # Process results for this chunk
+                for j, i in enumerate(indices):
                     truth_label, label_name = get_truth_label(arrays, i)
-                    pred_label = int(np.argmax(logits_np))
+                    pred_label = int(np.argmax(logits_np[j]))
                     all_preds.append(pred_label)
                     all_truths.append(truth_label)
-                    # Compute softmax in-place to avoid storing raw logits
-                    exp_l = np.exp(logits_np - logits_np.max())
+                    exp_l = np.exp(logits_np[j] - logits_np[j].max())
                     all_probs.append((exp_l / exp_l.sum()).astype(np.float16))
 
                     if fmt == "npy":
-                        emb_list.append(emb.astype(np.float16))
-                        # Periodically flush to disk to avoid OOM on large datasets
-                        if len(emb_list) >= NPY_FLUSH_INTERVAL:
-                            _flush_npy(emb_list, output_path, first_flush)
-                            first_flush = False
-                            print(f"  {class_name}: flushed {total_written + 1:,} embeddings to disk")
+                        emb_list.append(emb_np[j].astype(np.float16))
                     else:
                         if not wrote_header:
                             base = [
@@ -337,30 +390,29 @@ def process_class(class_name, root_files, root_dir, output_dir, target_events,
                                 "truth_label", "label_name",
                                 "jet_sdmass", "jet_mass", "jet_pt", "jet_eta", "jet_phi",
                             ]
-                            logit_cols = [f"logit_{j}" for j in range(logits_np.shape[0])]
-                            emb_cols = [f"emb_{j}" for j in range(emb.shape[-1])]
+                            logit_cols = [f"logit_{k}" for k in range(logits_np.shape[1])]
+                            emb_cols = [f"emb_{k}" for k in range(emb_np.shape[1])]
                             writer.writerow(base + logit_cols + emb_cols)
                             wrote_header = True
 
                         jet_sdmass, jet_mass, pt, eta, phi = jet_masses(arrays, i)
                         entry_index = int(batch_start_entry + i)
-
                         row = [
                             source_file, entry_index, total_written,
                             truth_label, label_name,
                             jet_sdmass, jet_mass, pt, eta, phi,
-                            *logits_np.astype(np.float32).tolist(),
-                            *emb.astype(np.float32).tolist(),
+                            *logits_np[j].astype(np.float32).tolist(),
+                            *emb_np[j].astype(np.float32).tolist(),
                         ]
                         writer.writerow(row)
 
                     total_written += 1
 
-                except Exception as e:
-                    if total_written == 0:
-                        raise RuntimeError(f"First event failed — aborting: {e}") from e
-                    pbar.set_postfix_str(f"err: {e}")
-                    continue
+                # Flush embeddings periodically
+                if fmt == "npy" and emb_list and len(emb_list) >= NPY_FLUSH_INTERVAL:
+                    _flush_npy(emb_list, output_path, first_flush)
+                    first_flush = False
+                    print(f"  {class_name}: flushed {total_written:,} embeddings to disk")
 
             if target is not None and total_written >= target:
                 break

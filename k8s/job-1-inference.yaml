@@ -50,13 +50,27 @@ spec:
           name: pvc
         resources:
           limits:
-            memory: "128Gi"
-            cpu: "8"
-            nvidia.com/gpu: "1"
-          requests:
             memory: "64Gi"
             cpu: "4"
             nvidia.com/gpu: "1"
+          requests:
+            memory: "32Gi"
+            cpu: "2"
+            nvidia.com/gpu: "1"
+        affinity:
+          nodeAffinity:
+            preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                - key: nvidia.com/gpu.product
+                  operator: In
+                  values:
+                  - NVIDIA-A100-SXM4-80GB
+                  - NVIDIA-A100-PCIE-40GB
+                  - NVIDIA-A40
+                  - NVIDIA-RTX-A6000
+                  - NVIDIA-RTX-A5000
       restartPolicy: Never
       volumes:
       - name: pvc
