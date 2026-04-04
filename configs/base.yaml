@@ -35,6 +35,8 @@ transfer:
   frozen_layers: 4
   backbone_lr: 1e-4
 
+sweep_name: default
+
 logging:
   wandb_project: transfer-scaling-jets
   wandb_entity: null
