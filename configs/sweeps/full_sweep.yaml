@@ -1,0 +1,6 @@
+sweep_name: "full_sweep"
+grid:
+  transfer.strategy: ["from_scratch", "frozen", "partial_ft", "full_ft"]
+  data.train_size: [10000, 30000, 100000, 300000, 1000000, 3000000, 10000000, 30000000, 100000000]
+  project.seed: [42, 123, 456]
+# Total: 4 strategies × 9 sizes × 3 seeds = 108 runs

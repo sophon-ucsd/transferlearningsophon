@@ -1,0 +1,6 @@
+sweep_name: "smoke_test"
+description: "12-run quick test: frozen vs from-scratch at 6 dataset sizes"
+grid:
+  transfer.strategy: ["frozen", "full_ft"]
+  data.train_size: [1000, 10000, 100000, 1000000, 10000000, 100000000]
+  project.seed: [42]

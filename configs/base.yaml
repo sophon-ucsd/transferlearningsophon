@@ -1,0 +1,41 @@
+project:
+  name: transfer-scaling-jets
+  seed: 42
+  deterministic: false
+
+model:
+  num_classes: 10
+
+data:
+  dataset: jetclass
+  data_dir: data/val_5M
+  num_particles: 128
+  train_size: null
+  val_size: 100000
+  test_size: 100000
+  batch_size: 512
+  num_workers: 4
+
+training:
+  max_epochs: 50
+  early_stopping_patience: 10
+  optimizer:
+    name: adamw
+    lr: 1e-3
+    weight_decay: 0.01
+  scheduler:
+    name: cosine
+    warmup_epochs: 5
+  gradient_clip_val: 1.0
+
+transfer:
+  strategy: frozen
+  checkpoint: models/JetClassII_Sophon/model.pt
+  head_type: mlp
+  frozen_layers: 4
+  backbone_lr: 1e-4
+
+logging:
+  wandb_project: transfer-scaling-jets
+  wandb_entity: null
+  log_every_n_steps: 50
