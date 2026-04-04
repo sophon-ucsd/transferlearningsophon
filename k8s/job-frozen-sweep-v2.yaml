@@ -1,0 +1,63 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: frozen-sweep-v2-raunav
+  namespace: cms-ml
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: train
+        image: gitlab-registry.nrp-nautilus.io/escheuller/transfer-learning:cu121
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -e
+          START_TIME=$(date +%s)
+
+          git clone https://github.com/raunavm/transferlearningsophon.git
+          cd transferlearningsophon
+          pip install scikit-learn hydra-core omegaconf torchmetrics
+
+          TRAIN_DIR=/data/embeddings_pretrained_full_02_174909_100M
+          VAL_DIR=/data/embeddings_val_5M
+          TEST_DIR=/data/embeddings_test_20M
+
+          for ARCH in small base large deep; do
+            for SIZE in 10000 30000 100000 300000 1000000 3000000 10000000 30000000 100000000; do
+              for SEED in 42 123 456; do
+                echo "=== arch=$ARCH size=$SIZE seed=$SEED ==="
+                python3 scripts/train_frozen_mlp.py \
+                  --train-embeddings-dir $TRAIN_DIR \
+                  --val-embeddings-dir $VAL_DIR \
+                  --test-embeddings-dir $TEST_DIR \
+                  --train-size $SIZE \
+                  --seed $SEED \
+                  --architecture $ARCH \
+                  --epochs 50 \
+                  --patience 10 \
+                  --batch-size 4096 \
+                  --sweep-name frozen_sweep_v2
+              done
+            done
+          done
+
+          END_TIME=$(date +%s)
+          ELAPSED=$(( END_TIME - START_TIME ))
+          echo "ALL DONE in $(( ELAPSED / 3600 ))h $(( (ELAPSED % 3600) / 60 ))m"
+        resources:
+          requests:
+            memory: "64Gi"
+            cpu: "4"
+          limits:
+            memory: "64Gi"
+            cpu: "8"
+        volumeMounts:
+        - name: pvc
+          mountPath: /data
+      volumes:
+      - name: pvc
+        persistentVolumeClaim:
+          claimName: transfer-learning-vol
