@@ -212,15 +212,25 @@ def main():
 
     print("\nLoading validation embeddings...")
     val_emb, val_lab = _load_dir(args.val_dir)
-    val_ds = ArrayDataset(np.ascontiguousarray(val_emb).astype(np.float32), val_lab)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
+    val_emb_f32 = np.ascontiguousarray(val_emb).astype(np.float32)
+    val_lab = val_lab.copy()
     print(f"Val: {len(val_lab):,} embeddings")
+
+    # Small val subset for per-epoch early stopping (100K is plenty)
+    VAL_SUBSET = 100_000
+    if len(val_lab) > VAL_SUBSET:
+        val_sub_idx = stratified_subsample(val_lab, VAL_SUBSET, seed=0)
+        val_small_ds = ArrayDataset(val_emb_f32[val_sub_idx], val_lab[val_sub_idx])
+        print(f"Val subset for early stopping: {len(val_sub_idx):,} embeddings")
+    else:
+        val_small_ds = ArrayDataset(val_emb_f32, val_lab)
+    val_small_loader = DataLoader(val_small_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
     print("\nLoading test embeddings...")
     test_emb, test_lab = _load_dir(args.test_dir)
     test_ds = ArrayDataset(np.ascontiguousarray(test_emb).astype(np.float32), test_lab)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
-    print(f"Test: {len(test_lab):,} embeddings")
+    print(f"Test: {len(test_lab):,} embeddings (full eval only at end of each run)")
 
     # === RUN ALL CONFIGS ===
     total_runs = len(ARCHS) * len(SIZES) * len(SEEDS)
@@ -237,7 +247,7 @@ def main():
                 print(f"\n[{run_idx}/{total_runs}] arch={arch} size={size:,} seed={seed}")
 
                 results = run_single(
-                    train_emb, train_lab, val_loader, test_loader,
+                    train_emb, train_lab, val_small_loader, test_loader,
                     arch, size, seed, device, args.output_dir,
                     epochs=args.epochs, patience=args.patience,
                     lr=args.lr, batch_size=args.batch_size,
