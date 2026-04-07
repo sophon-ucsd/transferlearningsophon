@@ -92,9 +92,10 @@ def main(cfg: DictConfig) -> None:
     # Test on best checkpoint
     trainer.test(lightning_model, datamodule=datamodule, ckpt_path="best")
 
-    # Save results
+    # Save results — use absolute path if results_dir is set, otherwise relative
+    base_dir = cfg.logging.get("results_dir", "results")
     output_dir = os.path.join(
-        "results",
+        base_dir,
         cfg.get("sweep_name", "default"),
         f"{cfg.transfer.strategy}_{cfg.data.train_size}_{cfg.project.seed}",
     )

@@ -44,9 +44,9 @@ spec:
                 project.seed=$SEED \
                 sweep_name=full_ft \
                 logging.wandb_project=null \
+                logging.results_dir=/data/results \
                 2>&1 | tail -5
 
-              cp -r results/full_ft/* /data/results/full_ft/ 2>/dev/null || true
             done
           done
           echo "ALL DONE"

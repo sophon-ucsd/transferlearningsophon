@@ -39,9 +39,9 @@ spec:
                 project.seed=$SEED \
                 sweep_name=from_scratch \
                 logging.wandb_project=null \
+                logging.results_dir=/data/results \
                 2>&1 | tail -5
 
-              cp -r results/from_scratch/* /data/results/from_scratch/ 2>/dev/null || true
             done
           done
           echo "ALL DONE"
