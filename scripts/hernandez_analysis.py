@@ -46,26 +46,78 @@ def hernandez_law(D, k, alpha):
 
 
 def fit_power_law(sizes, losses):
-    """Fit L(D) = L_inf + A * D^(-beta). Returns dict with params and R^2."""
+    """Fit L(D) = L_inf + A * D^(-beta) using log-space linear regression.
+
+    Two-step procedure (standard for scaling law papers):
+    1. Grid search over L_inf candidates
+    2. For each L_inf, fit log(L - L_inf) = log(A) - beta*log(D) as linear regression
+    3. Pick L_inf that minimizes residual in log-space
+
+    This matches Kaplan et al. / Hoffmann et al. / Hernandez et al. methodology.
+    """
     x = np.asarray(sizes, dtype=float)
     y = np.asarray(losses, dtype=float)
     try:
-        p0 = [y.min() * 0.9, (y.max() - y.min()) * x.min() ** 0.3, 0.3]
-        bounds = ([0, 0, 0.01], [y.max(), np.inf, 5.0])
-        popt, pcov = curve_fit(power_law, x, y, p0=p0, bounds=bounds, maxfev=10000)
-        perr = np.sqrt(np.diag(pcov))
-        y_pred = power_law(x, *popt)
-        ss_res = np.sum((y - y_pred) ** 2)
-        ss_tot = np.sum((y - y.mean()) ** 2)
-        r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
-        return {
-            "L_inf": popt[0], "L_inf_err": perr[0],
-            "A": popt[1], "A_err": perr[1],
-            "beta": popt[2], "beta_err": perr[2],
-            "R2": r2, "success": True,
-        }
-    except RuntimeError as e:
+        # Grid search over L_inf from 0 to slightly below min(y)
+        best_r2 = -np.inf
+        best_result = None
+        for l_inf_frac in np.linspace(0.01, 0.99, 200):
+            l_inf = y.min() * l_inf_frac
+            residual = y - l_inf
+            if np.any(residual <= 0):
+                continue
+            # Linear regression in log-space: log(L - L_inf) = log(A) - beta * log(D)
+            log_x = np.log(x)
+            log_r = np.log(residual)
+            # Fit: log_r = intercept + slope * log_x  →  slope = -beta, intercept = log(A)
+            coeffs = np.polyfit(log_x, log_r, 1)
+            slope, intercept = coeffs
+            beta = -slope
+            A = np.exp(intercept)
+            # R² in log-space
+            log_r_pred = intercept + slope * log_x
+            ss_res = np.sum((log_r - log_r_pred) ** 2)
+            ss_tot = np.sum((log_r - log_r.mean()) ** 2)
+            r2_log = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+            # Also compute R² in original space for reporting
+            y_pred = l_inf + A * np.power(x, -beta)
+            ss_res_orig = np.sum((y - y_pred) ** 2)
+            ss_tot_orig = np.sum((y - y.mean()) ** 2)
+            r2_orig = 1 - ss_res_orig / ss_tot_orig if ss_tot_orig > 0 else 0
+
+            if r2_log > best_r2:
+                best_r2 = r2_log
+                best_result = {
+                    "L_inf": l_inf, "A": A, "beta": beta,
+                    "R2": r2_orig, "R2_log": r2_log,
+                }
+
+        if best_result is None:
+            return {"success": False, "error": "No valid L_inf found"}
+
+        # Estimate uncertainties via bootstrap
+        n_boot = 500
+        betas = []
+        rng = np.random.RandomState(42)
+        l_inf = best_result["L_inf"]
+        for _ in range(n_boot):
+            idx = rng.choice(len(x), size=len(x), replace=True)
+            residual = y[idx] - l_inf
+            if np.any(residual <= 0):
+                continue
+            coeffs = np.polyfit(np.log(x[idx]), np.log(residual), 1)
+            betas.append(-coeffs[0])
+        beta_err = np.std(betas) if betas else 0.0
+
+        best_result["L_inf_err"] = 0.0  # L_inf from grid search, no analytic error
+        best_result["A_err"] = 0.0
+        best_result["beta_err"] = beta_err
+        best_result["success"] = True
+        return best_result
+
+    except Exception as e:
         return {"success": False, "error": str(e)}
+
 
 
 def compute_effective_data(scratch_sizes, scratch_losses, pretrained_sizes, pretrained_losses):
