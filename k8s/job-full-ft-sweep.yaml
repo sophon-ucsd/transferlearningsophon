@@ -39,7 +39,7 @@ spec:
                 data.batch_size=512 \
                 data.num_workers=4 \
                 training.optimizer.lr=1e-3 \
-                training.max_epochs=30 \
+                training.max_epochs=100 \
                 training.early_stopping_patience=10 \
                 project.seed=$SEED \
                 sweep_name=full_ft \
