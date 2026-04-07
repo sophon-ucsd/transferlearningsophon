@@ -8,11 +8,14 @@ model:
 
 data:
   dataset: jetclass
-  data_dir: data/val_5M
+  data_dir: data/val_5M        # fallback: single dir, split internally
+  train_dir: null              # official split: /data/JetClass/Pythia/train_100M
+  val_dir: null                # official split: /data/JetClass/Pythia/val_5M
+  test_dir: null               # official split: /data/JetClass/Pythia/test_20M
   num_particles: 128
   train_size: null
-  val_size: 100000
-  test_size: 100000
+  val_size: null
+  test_size: null
   batch_size: 512
   num_workers: 4
 

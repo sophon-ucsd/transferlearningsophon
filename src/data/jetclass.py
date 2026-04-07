@@ -331,13 +331,17 @@ if pl is not None:
     class JetClassDataModule(pl.LightningDataModule):
         """Lightning data module for JetClass ROOT files.
 
-        Splits files per class: first 80% train, next 10% val, last 10% test.
-        Applies stratified subsampling to train set if train_size is specified.
+        Supports two modes:
+        1. Separate dirs (official splits): train_dir + val_dir + test_dir
+        2. Single dir (fallback): data_dir split internally 80/10/10
         """
 
         def __init__(
             self,
-            data_dir: str,
+            data_dir: str = "",
+            train_dir: str | None = None,
+            val_dir: str | None = None,
+            test_dir: str | None = None,
             train_size: int | None = None,
             val_size: int | None = None,
             test_size: int | None = None,
@@ -347,6 +351,9 @@ if pl is not None:
         ) -> None:
             super().__init__()
             self.data_dir = data_dir
+            self.train_dir = train_dir
+            self.val_dir = val_dir
+            self.test_dir = test_dir
             self.train_size = train_size
             self.val_size = val_size
             self.test_size = test_size
@@ -359,31 +366,14 @@ if pl is not None:
             self.test_dataset: Optional[Dataset] = None
 
         def setup(self, stage: str | None = None) -> None:
-            files_by_class = _discover_files(self.data_dir)
-            if not files_by_class:
-                raise FileNotFoundError(f"No ROOT files found in {self.data_dir}")
-
-            train_files, val_files, test_files = [], [], []
-
-            for cls_name, flist in sorted(files_by_class.items()):
-                n = len(flist)
-                if n <= 2:
-                    # Very few files: use all for train, first for val/test
-                    train_files.extend(flist)
-                    val_files.extend(flist[:1])
-                    test_files.extend(flist[:1])
-                elif n <= 5:
-                    # Small dataset (e.g. val_5M with 5 files): 3 train, 1 val, 1 test
-                    train_files.extend(flist[:-2])
-                    val_files.append(flist[-2])
-                    test_files.append(flist[-1])
-                else:
-                    # Normal split: 80/10/10
-                    n_train = int(n * 0.8)
-                    n_val = max(1, int(n * 0.1))
-                    train_files.extend(flist[:n_train])
-                    val_files.extend(flist[n_train:n_train + n_val])
-                    test_files.extend(flist[n_train + n_val:])
+            if self.train_dir and self.val_dir and self.test_dir:
+                # Official JetClass splits — separate directories
+                train_files = self._all_files(self.train_dir)
+                val_files = self._all_files(self.val_dir)
+                test_files = self._all_files(self.test_dir)
+            else:
+                # Fallback: single dir, split internally
+                train_files, val_files, test_files = self._split_single_dir(self.data_dir)
 
             print(f"Files — train: {len(train_files)}, val: {len(val_files)}, test: {len(test_files)}")
 
@@ -429,3 +419,39 @@ if pl is not None:
                 num_workers=self.num_workers, collate_fn=jetclass_collate,
                 pin_memory=True,
             )
+
+        @staticmethod
+        def _all_files(data_dir: str) -> list[Path]:
+            """Get all ROOT files from a directory (no splitting)."""
+            files_by_class = _discover_files(data_dir)
+            if not files_by_class:
+                raise FileNotFoundError(f"No ROOT files found in {data_dir}")
+            all_files = []
+            for flist in sorted(files_by_class.values()):
+                all_files.extend(flist)
+            return all_files
+
+        @staticmethod
+        def _split_single_dir(data_dir: str) -> tuple[list[Path], list[Path], list[Path]]:
+            """Split files from a single directory 80/10/10."""
+            files_by_class = _discover_files(data_dir)
+            if not files_by_class:
+                raise FileNotFoundError(f"No ROOT files found in {data_dir}")
+            train_files, val_files, test_files = [], [], []
+            for cls_name, flist in sorted(files_by_class.items()):
+                n = len(flist)
+                if n <= 2:
+                    train_files.extend(flist)
+                    val_files.extend(flist[:1])
+                    test_files.extend(flist[:1])
+                elif n <= 5:
+                    train_files.extend(flist[:-2])
+                    val_files.append(flist[-2])
+                    test_files.append(flist[-1])
+                else:
+                    n_train = int(n * 0.8)
+                    n_val = max(1, int(n * 0.1))
+                    train_files.extend(flist[:n_train])
+                    val_files.extend(flist[n_train:n_train + n_val])
+                    test_files.extend(flist[n_train + n_val:])
+            return train_files, val_files, test_files

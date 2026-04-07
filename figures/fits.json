@@ -1,0 +1,213 @@
+{
+  "power_law_fits": {
+    "from_scratch": {
+      "L_inf": 0.4492358731451605,
+      "L_inf_err": 0.002784031385139694,
+      "A": 1.779336150921035,
+      "A_err": 0.10447738106211803,
+      "beta": 0.24580435537207934,
+      "beta_err": 0.007639127817889925,
+      "R2": 0.9998117463904558,
+      "success": true
+    },
+    "frozen": {
+      "L_inf": 0.34947034964213375,
+      "L_inf_err": 0.0020242214842576523,
+      "A": 1.6282513273966441,
+      "A_err": 0.16466865748330078,
+      "beta": 0.29250688537001335,
+      "beta_err": 0.012376771599885275,
+      "R2": 0.999542859763669,
+      "success": true
+    },
+    "full_ft": {
+      "L_inf": 0.24961484659337413,
+      "L_inf_err": 0.0015801314710304792,
+      "A": 1.4441115353601732,
+      "A_err": 0.2520926401611504,
+      "beta": 0.33641322002383184,
+      "beta_err": 0.020603640556880076,
+      "R2": 0.9988328146377962,
+      "success": true
+    },
+    "partial_ft": {
+      "L_inf": 0.2995358793624571,
+      "L_inf_err": 0.0018197616308263478,
+      "A": 1.5494248307838676,
+      "A_err": 0.19597299861316153,
+      "beta": 0.3104501023976493,
+      "beta_err": 0.015223277027475397,
+      "R2": 0.9993305267431943,
+      "success": true
+    }
+  },
+  "hernandez_fits": {
+    "frozen": {
+      "success": false,
+      "error": "Not enough valid points"
+    },
+    "full_ft": {
+      "success": false,
+      "error": "Not enough valid points"
+    },
+    "partial_ft": {
+      "success": false,
+      "error": "Not enough valid points"
+    }
+  },
+  "effective_data": {
+    "frozen": [
+      {
+        "pretrained_size": 10000,
+        "pretrained_loss": 0.45903588777622256,
+        "equiv_scratch_size": 1550112090.90746,
+        "D_T": 1550102090.90746,
+        "multiplier": 155011.209090746
+      },
+      {
+        "pretrained_size": 30000,
+        "pretrained_loss": 0.43023753128387865,
+        "equiv_scratch_size": Infinity,
+        "D_T": Infinity,
+        "multiplier": Infinity
+      },
+      {
+        "pretrained_size": 100000,
+        "pretrained_loss": 0.4061518810545021,
+        "equiv_scratch_size": Infinity,
+        "D_T": Infinity,
+        "multiplier": Infinity
+      },
+      {
+        "pretrained_size": 300000,
+        "pretrained_loss": 0.3890209782430934,
+        "equiv_scratch_size": Infinity,
+        "D_T": Infinity,
+        "multiplier": Infinity
+      },
+      {
+        "pretrained_size": 1000000,
+        "pretrained_loss": 0.37758319125075207,
+        "equiv_scratch_size": Infinity,
+        "D_T": Infinity,
+        "multiplier": Infinity
+      },
+      {
+        "pretrained_size": 3000000,
+        "pretrained_loss": 0.3704678915542092,
+        "equiv_scratch_size": Infinity,
+        "D_T": Infinity,
+        "multiplier": Infinity
+      },
+      {
+        "pretrained_size": 10000000,
+        "pretrained_loss": 0.364496628024424,
+        "equiv_scratch_size": Infinity,
+        "D_T": Infinity,
+        "multiplier": Infinity
+      }
+    ],
+    "full_ft": [
+      {
+        "pretrained_size": 10000,
+        "pretrained_loss": 0.3143060356335157,
+        "equiv_scratch_size": Infinity,
+        "D_T": Infinity,
+        "multiplier": Infinity
+      },
+      {
+        "pretrained_size": 30000,
+        "pretrained_loss": 0.29554163045323295,
+        "equiv_scratch_size": Infinity,
+        "D_T": Infinity,
+        "multiplier": Infinity
+      },
+      {
+        "pretrained_size": 100000,
+        "pretrained_loss": 0.28015363226719775,
+        "equiv_scratch_size": Infinity,
+        "D_T": Infinity,
+        "multiplier": Infinity
+      },
+      {
+        "pretrained_size": 300000,
+        "pretrained_loss": 0.26919449058989003,
+        "equiv_scratch_size": Infinity,
+        "D_T": Infinity,
+        "multiplier": Infinity
+      },
+      {
+        "pretrained_size": 1000000,
+        "pretrained_loss": 0.2629539762556332,
+        "equiv_scratch_size": Infinity,
+        "D_T": Infinity,
+        "multiplier": Infinity
+      },
+      {
+        "pretrained_size": 3000000,
+        "pretrained_loss": 0.25944238699120903,
+        "equiv_scratch_size": Infinity,
+        "D_T": Infinity,
+        "multiplier": Infinity
+      },
+      {
+        "pretrained_size": 10000000,
+        "pretrained_loss": 0.25645030483910314,
+        "equiv_scratch_size": Infinity,
+        "D_T": Infinity,
+        "multiplier": Infinity
+      }
+    ],
+    "partial_ft": [
+      {
+        "pretrained_size": 10000,
+        "pretrained_loss": 0.38783562073465,
+        "equiv_scratch_size": Infinity,
+        "D_T": Infinity,
+        "multiplier": Infinity
+      },
+      {
+        "pretrained_size": 30000,
+        "pretrained_loss": 0.36359529038284694,
+        "equiv_scratch_size": Infinity,
+        "D_T": Infinity,
+        "multiplier": Infinity
+      },
+      {
+        "pretrained_size": 100000,
+        "pretrained_loss": 0.34351409133721833,
+        "equiv_scratch_size": Infinity,
+        "D_T": Infinity,
+        "multiplier": Infinity
+      },
+      {
+        "pretrained_size": 300000,
+        "pretrained_loss": 0.3292641291476422,
+        "equiv_scratch_size": Infinity,
+        "D_T": Infinity,
+        "multiplier": Infinity
+      },
+      {
+        "pretrained_size": 1000000,
+        "pretrained_loss": 0.3202860557711786,
+        "equiv_scratch_size": Infinity,
+        "D_T": Infinity,
+        "multiplier": Infinity
+      },
+      {
+        "pretrained_size": 3000000,
+        "pretrained_loss": 0.3149001572957721,
+        "equiv_scratch_size": Infinity,
+        "D_T": Infinity,
+        "multiplier": Infinity
+      },
+      {
+        "pretrained_size": 10000000,
+        "pretrained_loss": 0.31037836285148074,
+        "equiv_scratch_size": Infinity,
+        "D_T": Infinity,
+        "multiplier": Infinity
+      }
+    ]
+  }
+}

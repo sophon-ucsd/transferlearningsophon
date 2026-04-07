@@ -30,7 +30,10 @@ def main(cfg: DictConfig) -> None:
 
     # Data
     datamodule = JetClassDataModule(
-        data_dir=cfg.data.data_dir,
+        data_dir=cfg.data.get("data_dir", ""),
+        train_dir=cfg.data.get("train_dir", None),
+        val_dir=cfg.data.get("val_dir", None),
+        test_dir=cfg.data.get("test_dir", None),
         train_size=cfg.data.train_size,
         val_size=cfg.data.val_size,
         test_size=cfg.data.test_size,
