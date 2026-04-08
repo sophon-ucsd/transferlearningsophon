@@ -375,6 +375,30 @@ if pl is not None:
                 # Fallback: single dir, split internally
                 train_files, val_files, test_files = self._split_single_dir(self.data_dir)
 
+            # Pre-select a subset of train files if train_size is small
+            # Avoids indexing 1000 files when we only need 10
+            JETS_PER_FILE = 100_000  # JetClass standard
+            if self.train_size is not None:
+                files_by_class = {}
+                for f in train_files:
+                    cls = f.stem.rsplit("_", 1)[0]
+                    files_by_class.setdefault(cls, []).append(f)
+                num_classes = len(files_by_class)
+                jets_per_class = self.train_size // num_classes
+                files_needed = max(1, (jets_per_class + JETS_PER_FILE - 1) // JETS_PER_FILE)
+                # Add 1 extra file margin for subsampling
+                files_needed = min(files_needed + 1, max(len(v) for v in files_by_class.values()))
+                rng = np.random.RandomState(self.seed)
+                selected = []
+                for cls, flist in sorted(files_by_class.items()):
+                    if files_needed < len(flist):
+                        chosen = rng.choice(len(flist), size=files_needed, replace=False)
+                        selected.extend([flist[i] for i in sorted(chosen)])
+                    else:
+                        selected.extend(flist)
+                train_files = selected
+                print(f"Pre-selected {len(train_files)} train files for train_size={self.train_size:,}")
+
             print(f"Files — train: {len(train_files)}, val: {len(val_files)}, test: {len(test_files)}")
 
             self.train_dataset = JetClassDataset(train_files)
