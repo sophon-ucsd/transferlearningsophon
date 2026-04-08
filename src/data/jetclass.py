@@ -266,34 +266,56 @@ class LazyJetClassDataset(Dataset):
 
     Processes files on demand with an LRU cache. Much lower memory than
     pre-loading, works well for sequential (non-shuffled) access.
+
+    If max_jets is set, only indexes that many jets total (stratified
+    across files). This ensures len(dataset) == max_jets exactly.
     """
 
     def __init__(self, file_list: list[str | Path], max_particles: int = MAX_PART,
-                 cache_size: int = 5) -> None:
+                 cache_size: int = 5, max_jets: int | None = None) -> None:
         self.file_list = [str(p) for p in file_list]
         self.max_particles = max_particles
 
-        # Build index: scan files for entry counts only (fast, no feature computation)
+        # Build index: scan files for entry counts, cap at max_jets
+        self._file_entry_counts: list[int] = []  # actual entries per file
+        self._file_use_counts: list[int] = []     # entries we'll use per file
         self._cum_sizes: list[int] = []
         total = 0
         for fpath in self.file_list:
             with uproot.open(f"{fpath}:{TREE_NAME}") as tree:
                 n = tree.num_entries
-            total += n
+            self._file_entry_counts.append(n)
+            if max_jets is not None:
+                use = min(n, max_jets - total)
+                use = max(0, use)
+            else:
+                use = n
+            self._file_use_counts.append(use)
+            total += use
             self._cum_sizes.append(total)
+            if max_jets is not None and total >= max_jets:
+                break  # don't even scan remaining files
         self._total = total
+
+        # Trim file lists to only files we actually use
+        n_files_used = len(self._cum_sizes)
+        self.file_list = self.file_list[:n_files_used]
+        self._file_entry_counts = self._file_entry_counts[:n_files_used]
+        self._file_use_counts = self._file_use_counts[:n_files_used]
 
         # LRU cache: file_idx -> (feats, lv, masks, labels)
         self._cache: dict[int, tuple] = {}
         self._cache_order: list[int] = []
         self._cache_size = cache_size
-        print(f"  LazyDataset: {self._total:,} jets across {len(self.file_list)} files")
+        print(f"  LazyDataset: {self._total:,} jets from {len(self.file_list)} files")
 
     def __len__(self) -> int:
         return self._total
 
     def _file_and_local(self, idx: int) -> tuple[int, int]:
         """Map global index to (file_idx, local_idx)."""
+        if idx < 0 or idx >= self._total:
+            raise IndexError(f"Index {idx} out of range [0, {self._total})")
         for file_idx, cum in enumerate(self._cum_sizes):
             if idx < cum:
                 local = idx - (self._cum_sizes[file_idx - 1] if file_idx > 0 else 0)
@@ -431,9 +453,9 @@ if pl is not None:
             self.train_dataset = self._load_and_subsample(
                 train_files, self.train_size, "train")
 
-            # Val/test: lazy load (sequential access, low memory)
-            self.val_dataset = LazyJetClassDataset(val_files)
-            self.test_dataset = LazyJetClassDataset(test_files)
+            # Val/test: lazy load with max_jets cap
+            self.val_dataset = LazyJetClassDataset(val_files, max_jets=self.val_size)
+            self.test_dataset = LazyJetClassDataset(test_files, max_jets=self.test_size)
 
         def train_dataloader(self) -> DataLoader:
             return DataLoader(
