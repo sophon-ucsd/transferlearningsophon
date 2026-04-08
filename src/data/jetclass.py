@@ -152,136 +152,113 @@ def compute_sophon_features(
 
 
 # ---------------------------------------------------------------------------
-# Dataset
+# Per-file feature processing
 # ---------------------------------------------------------------------------
-class JetClassDataset(Dataset):
-    """Lazy-loading JetClass ROOT dataset.
+def _process_file(fpath: str, max_particles: int = MAX_PART):
+    """Load one ROOT file and compute all features/LV/masks/labels.
 
-    Builds an index over all files, loads one file at a time on demand.
+    Returns: features (N, max_part, 17), lorentz_vectors (N, max_part, 4),
+             masks (N, max_part), labels (N,)
     """
+    with uproot.open(f"{fpath}:{TREE_NAME}") as tree:
+        arrays = tree.arrays(ALL_KEYS, library="np")
 
-    def __init__(self, file_list: list[str | Path], max_particles: int = MAX_PART) -> None:
-        self.file_list = [str(p) for p in file_list]
-        self.max_particles = max_particles
+    n_jets = len(arrays["jet_pt"])
+    all_feats = np.zeros((n_jets, max_particles, 17), dtype=np.float32)
+    all_lv = np.zeros((n_jets, max_particles, 4), dtype=np.float32)
+    all_masks = np.zeros((n_jets, max_particles), dtype=bool)
 
-        # Build global index: list of (file_idx, local_idx, label)
-        self._index: list[tuple[int, int, int]] = []
-        self._file_num_entries: list[int] = []
+    # Labels from one-hot
+    label_matrix = np.stack([arrays[k] for k in LABEL_KEYS], axis=1)
+    all_labels = np.argmax(label_matrix, axis=1)
 
-        for file_idx, fpath in enumerate(self.file_list):
-            with uproot.open(f"{fpath}:{TREE_NAME}") as tree:
-                n_entries = tree.num_entries
-            self._file_num_entries.append(n_entries)
-            # We'll read labels when we actually load the file
-            for local_idx in range(n_entries):
-                self._index.append((file_idx, local_idx, -1))  # label filled on load
-
-        # Cache: last loaded file data
-        self._cached_file_idx: int = -1
-        self._cached_arrays: dict | None = None
-        self._cached_labels: np.ndarray | None = None
-
-    def __len__(self) -> int:
-        return len(self._index)
-
-    def _load_file(self, file_idx: int) -> None:
-        """Load a ROOT file into the cache."""
-        if file_idx == self._cached_file_idx:
-            return
-        fpath = self.file_list[file_idx]
-        with uproot.open(f"{fpath}:{TREE_NAME}") as tree:
-            arrays = tree.arrays(ALL_KEYS, library="np")
-        # Compute labels from label columns
-        label_matrix = np.stack([arrays[k] for k in LABEL_KEYS], axis=1)  # (N, 10)
-        labels = np.argmax(label_matrix, axis=1)  # (N,)
-        self._cached_file_idx = file_idx
-        self._cached_arrays = arrays
-        self._cached_labels = labels
-
-    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        file_idx, local_idx, _ = self._index[idx]
-        self._load_file(file_idx)
-        arrays = self._cached_arrays
-        i = local_idx
-
-        # --- Get raw particle arrays for this jet ---
+    for i in range(n_jets):
         px = arrays["part_px"][i]
         py = arrays["part_py"][i]
         pz = arrays["part_pz"][i]
         energy = arrays["part_energy"][i]
         n_part = len(px)
 
-        # pT-sort and truncate to max_particles
         pt = np.sqrt(px ** 2 + py ** 2)
-        if n_part > self.max_particles:
-            keep = np.argsort(pt)[::-1][:self.max_particles]
-            n_part = self.max_particles
+        if n_part > max_particles:
+            keep = np.argsort(pt)[::-1][:max_particles]
+            n_part = max_particles
         else:
-            keep = np.argsort(pt)[::-1]  # still sort by descending pT
+            keep = np.argsort(pt)[::-1]
 
-        # Apply keep index to all particle arrays
-        px = px[keep]
-        py = py[keep]
-        pz = pz[keep]
-        energy = energy[keep]
-
+        px, py, pz, energy = px[keep], py[keep], pz[keep], energy[keep]
         jet_pt = float(arrays["jet_pt"][i])
         jet_energy = float(arrays["jet_energy"][i])
         jet_pt_safe = max(jet_pt, 1e-20)
 
-        # --- Lorentz vectors: scaled by 500/jet_pt ---
         lv = np.stack([
-            px * 500.0 / jet_pt_safe,
-            py * 500.0 / jet_pt_safe,
-            pz * 500.0 / jet_pt_safe,
-            energy * 500.0 / jet_pt_safe,
-        ], axis=1).astype(np.float32)  # (n_part, 4)
+            px * 500.0 / jet_pt_safe, py * 500.0 / jet_pt_safe,
+            pz * 500.0 / jet_pt_safe, energy * 500.0 / jet_pt_safe,
+        ], axis=1).astype(np.float32)
 
-        # --- 17 Sophon features ---
         feats = compute_sophon_features(
             px=px, py=py, pz=pz, energy=energy,
-            deta=arrays["part_deta"][i][keep],
-            dphi=arrays["part_dphi"][i][keep],
-            d0val=arrays["part_d0val"][i][keep],
-            d0err=arrays["part_d0err"][i][keep],
-            dzval=arrays["part_dzval"][i][keep],
-            dzerr=arrays["part_dzerr"][i][keep],
+            deta=arrays["part_deta"][i][keep], dphi=arrays["part_dphi"][i][keep],
+            d0val=arrays["part_d0val"][i][keep], d0err=arrays["part_d0err"][i][keep],
+            dzval=arrays["part_dzval"][i][keep], dzerr=arrays["part_dzerr"][i][keep],
             charge=arrays["part_charge"][i][keep],
             isChargedHadron=arrays["part_isChargedHadron"][i][keep],
             isNeutralHadron=arrays["part_isNeutralHadron"][i][keep],
             isPhoton=arrays["part_isPhoton"][i][keep],
             isElectron=arrays["part_isElectron"][i][keep],
             isMuon=arrays["part_isMuon"][i][keep],
-            jet_pt=jet_pt,
-            jet_energy=jet_energy,
-        )  # (n_part, 17)
+            jet_pt=jet_pt, jet_energy=jet_energy,
+        )
 
-        # --- Pad to max_particles ---
-        feat_padded = np.zeros((self.max_particles, 17), dtype=np.float32)
-        feat_padded[:n_part] = feats
+        all_feats[i, :n_part] = feats
+        all_lv[i, :n_part] = lv
+        all_masks[i, :n_part] = True
 
-        lv_padded = np.zeros((self.max_particles, 4), dtype=np.float32)
-        lv_padded[:n_part] = lv
+    return all_feats, all_lv, all_masks, all_labels
 
-        mask = np.zeros(self.max_particles, dtype=bool)
-        mask[:n_part] = True
 
-        label = int(self._cached_labels[local_idx])
+# ---------------------------------------------------------------------------
+# Dataset
+# ---------------------------------------------------------------------------
+class JetClassDataset(Dataset):
+    """Pre-loaded JetClass ROOT dataset.
 
+    Loads all files at init time, computes features, stores in memory.
+    __getitem__ is a simple array index — no I/O.
+    """
+
+    def __init__(self, file_list: list[str | Path], max_particles: int = MAX_PART) -> None:
+        self.max_particles = max_particles
+
+        all_feats, all_lv, all_masks, all_labels = [], [], [], []
+        for fpath in file_list:
+            print(f"  Loading {Path(fpath).name}...", end="", flush=True)
+            feats, lv, masks, labels = _process_file(str(fpath), max_particles)
+            all_feats.append(feats)
+            all_lv.append(lv)
+            all_masks.append(masks)
+            all_labels.append(labels)
+            print(f" {len(labels):,} jets")
+
+        self.features = np.concatenate(all_feats)      # (N, 128, 17)
+        self.lorentz_vectors = np.concatenate(all_lv)   # (N, 128, 4)
+        self.masks = np.concatenate(all_masks)           # (N, 128)
+        self.labels = np.concatenate(all_labels)         # (N,)
+        print(f"  Total: {len(self.labels):,} jets loaded into memory")
+
+    def __len__(self) -> int:
+        return len(self.labels)
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         return {
-            "features": torch.from_numpy(feat_padded),          # (128, 17)
-            "lorentz_vectors": torch.from_numpy(lv_padded),     # (128, 4)
-            "mask": torch.from_numpy(mask),                     # (128,)
-            "label": label,
+            "features": torch.from_numpy(self.features[idx]),
+            "lorentz_vectors": torch.from_numpy(self.lorentz_vectors[idx]),
+            "mask": torch.from_numpy(self.masks[idx]),
+            "label": int(self.labels[idx]),
         }
 
     def get_all_labels(self) -> np.ndarray:
-        """Return labels for the full dataset (loads all files)."""
-        labels = []
-        for file_idx in range(len(self.file_list)):
-            self._load_file(file_idx)
-            labels.append(self._cached_labels.copy())
-        return np.concatenate(labels)
+        return self.labels.copy()
 
 
 # ---------------------------------------------------------------------------
