@@ -162,7 +162,15 @@ def main():
     parser.add_argument("--val-dir", required=True)
     parser.add_argument("--test-dir", required=True)
     parser.add_argument("--output-dir", default="/data/results/frozen_base")
+    parser.add_argument("--sizes", default=None,
+                        help="Comma-separated list of train sizes (default: all 9)")
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--patience", type=int, default=10)
     args = parser.parse_args()
+
+    if args.sizes:
+        global SIZES
+        SIZES = [int(s) for s in args.sizes.split(",")]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
@@ -204,7 +212,8 @@ def main():
             idx += 1
             print(f"\n[{idx}/{total}] size={size:,} seed={seed}")
             results = run_single(train_emb, train_lab, val_loader, test_loader,
-                                 size, seed, device, args.output_dir)
+                                 size, seed, device, args.output_dir,
+                                 epochs=args.epochs, patience=args.patience)
             print(f"  acc={results['test_acc']:.4f} auc={results['test_auc_macro']:.4f} "
                   f"time={results['wall_clock_seconds']:.1f}s epochs={results['num_epochs']}")
 
