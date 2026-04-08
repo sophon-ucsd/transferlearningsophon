@@ -414,66 +414,26 @@ if pl is not None:
 
         def setup(self, stage: str | None = None) -> None:
             if self.train_dir and self.val_dir and self.test_dir:
-                # Official JetClass splits — separate directories
                 train_files = self._all_files(self.train_dir)
                 val_files = self._all_files(self.val_dir)
                 test_files = self._all_files(self.test_dir)
             else:
-                # Fallback: single dir, split internally
                 train_files, val_files, test_files = self._split_single_dir(self.data_dir)
 
-            # Pre-select a subset of train files if train_size is small
-            # Avoids indexing 1000 files when we only need 10
-            JETS_PER_FILE = 100_000  # JetClass standard
-            if self.train_size is not None:
-                files_by_class = {}
-                for f in train_files:
-                    cls = f.stem.rsplit("_", 1)[0]
-                    files_by_class.setdefault(cls, []).append(f)
-                num_classes = len(files_by_class)
-                jets_per_class = self.train_size // num_classes
-                files_needed = max(1, (jets_per_class + JETS_PER_FILE - 1) // JETS_PER_FILE)
-                # Add 1 extra file margin for subsampling
-                files_needed = min(files_needed + 1, max(len(v) for v in files_by_class.values()))
-                rng = np.random.RandomState(self.seed)
-                selected = []
-                for cls, flist in sorted(files_by_class.items()):
-                    if files_needed < len(flist):
-                        chosen = rng.choice(len(flist), size=files_needed, replace=False)
-                        selected.extend([flist[i] for i in sorted(chosen)])
-                    else:
-                        selected.extend(flist)
-                train_files = selected
-                print(f"Pre-selected {len(train_files)} train files for train_size={self.train_size:,}")
-
-            # Pre-select val/test files too if sizes are specified
+            # Pre-select files to avoid loading more than needed
+            train_files = self._preselect_files(train_files, self.train_size)
             val_files = self._preselect_files(val_files, self.val_size)
             test_files = self._preselect_files(test_files, self.test_size)
 
             print(f"Files — train: {len(train_files)}, val: {len(val_files)}, test: {len(test_files)}")
 
-            # Pre-load train into memory (fast __getitem__), lazy-load val/test (low memory)
-            self.train_dataset = JetClassDataset(train_files)
+            # Load train into memory with streaming subsample
+            self.train_dataset = self._load_and_subsample(
+                train_files, self.train_size, "train")
+
+            # Val/test: lazy load (sequential access, low memory)
             self.val_dataset = LazyJetClassDataset(val_files)
             self.test_dataset = LazyJetClassDataset(test_files)
-
-            # Apply subsampling to train set
-            if self.train_size is not None and self.train_size < len(self.train_dataset):
-                labels = self.train_dataset.get_all_labels()
-                indices = stratified_subsample(labels, self.train_size, self.seed)
-                self.train_dataset = torch.utils.data.Subset(self.train_dataset, indices)
-                print(f"Subsampled train set: {len(self.train_dataset)} jets")
-
-            # Apply subsampling to val/test if specified
-            if self.val_size is not None and self.val_size < len(self.val_dataset):
-                labels = self.val_dataset.get_all_labels()
-                indices = stratified_subsample(labels, self.val_size, self.seed)
-                self.val_dataset = torch.utils.data.Subset(self.val_dataset, indices)
-
-            if self.test_size is not None and self.test_size < len(self.test_dataset):
-                labels = self.test_dataset.get_all_labels()
-                indices = stratified_subsample(labels, self.test_size, self.seed)
-                self.test_dataset = torch.utils.data.Subset(self.test_dataset, indices)
 
         def train_dataloader(self) -> DataLoader:
             return DataLoader(
@@ -519,6 +479,72 @@ if pl is not None:
             if len(selected) < len(file_list):
                 print(f"Pre-selected {len(selected)} files for target_size={target_size:,}")
             return selected
+
+        def _load_and_subsample(self, file_list: list[Path],
+                                target_size: int | None, split_name: str) -> JetClassDataset:
+            """Load files one at a time, subsample on the fly, store only kept jets.
+
+            Memory usage = target_size * (128*17 + 128*4 + 128 + 1) * 4 bytes.
+            For 100K jets ≈ 1GB. For 10M jets ≈ 100GB (falls back to full load).
+            """
+            # First pass: count jets per class across files (fast, just entry counts)
+            class_counts: dict[str, int] = {}
+            file_classes: list[str] = []
+            for f in file_list:
+                cls = f.stem.rsplit("_", 1)[0]
+                file_classes.append(cls)
+                with uproot.open(f"{f}:{TREE_NAME}") as tree:
+                    class_counts[cls] = class_counts.get(cls, 0) + tree.num_entries
+
+            total_jets = sum(class_counts.values())
+            num_classes = len(class_counts)
+
+            if target_size is None or target_size >= total_jets:
+                # Load everything — no subsampling needed
+                print(f"  Loading all {total_jets:,} {split_name} jets...")
+                return JetClassDataset(file_list)
+
+            # Compute how many jets to keep per class
+            per_class_target = target_size // num_classes
+            # Track how many we've kept per class
+            kept_per_class: dict[str, int] = {cls: 0 for cls in class_counts}
+
+            all_feats, all_lv, all_masks, all_labels = [], [], [], []
+            rng = np.random.RandomState(self.seed)
+
+            for fpath, cls in zip(file_list, file_classes):
+                remaining = per_class_target - kept_per_class[cls]
+                if remaining <= 0:
+                    continue
+
+                print(f"  Loading {Path(fpath).name}...", end="", flush=True)
+                feats, lv, masks, labels = _process_file(str(fpath), MAX_PART)
+                n = len(labels)
+
+                if remaining < n:
+                    # Subsample this file
+                    idx = rng.choice(n, size=remaining, replace=False)
+                    idx.sort()
+                    feats, lv, masks, labels = feats[idx], lv[idx], masks[idx], labels[idx]
+
+                all_feats.append(feats)
+                all_lv.append(lv)
+                all_masks.append(masks)
+                all_labels.append(labels)
+                kept_per_class[cls] += len(labels)
+                print(f" kept {len(labels):,}/{n:,}")
+
+            # Build dataset from collected arrays
+            ds = JetClassDataset.__new__(JetClassDataset)
+            ds.max_particles = MAX_PART
+            ds.features = np.concatenate(all_feats)
+            ds.lorentz_vectors = np.concatenate(all_lv)
+            ds.masks = np.concatenate(all_masks)
+            ds.labels = np.concatenate(all_labels)
+            total_kept = len(ds.labels)
+            print(f"  {split_name}: {total_kept:,} jets in memory "
+                  f"({total_kept * 128 * 21 * 4 / 1e9:.1f} GB)")
+            return ds
 
         @staticmethod
         def _all_files(data_dir: str) -> list[Path]:
