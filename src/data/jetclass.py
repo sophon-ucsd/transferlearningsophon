@@ -376,6 +376,10 @@ if pl is not None:
                 train_files = selected
                 print(f"Pre-selected {len(train_files)} train files for train_size={self.train_size:,}")
 
+            # Pre-select val/test files too if sizes are specified
+            val_files = self._preselect_files(val_files, self.val_size)
+            test_files = self._preselect_files(test_files, self.test_size)
+
             print(f"Files — train: {len(train_files)}, val: {len(val_files)}, test: {len(test_files)}")
 
             self.train_dataset = JetClassDataset(train_files)
@@ -420,6 +424,30 @@ if pl is not None:
                 num_workers=self.num_workers, collate_fn=jetclass_collate,
                 pin_memory=True,
             )
+
+        @staticmethod
+        def _preselect_files(file_list: list[Path], target_size: int | None,
+                             jets_per_file: int = 100_000) -> list[Path]:
+            """Reduce file list if target_size is much smaller than total."""
+            if target_size is None:
+                return file_list
+            total_available = len(file_list) * jets_per_file
+            if target_size >= total_available:
+                return file_list
+            # Group by class, select enough files per class
+            files_by_class: dict[str, list[Path]] = {}
+            for f in file_list:
+                cls = f.stem.rsplit("_", 1)[0]
+                files_by_class.setdefault(cls, []).append(f)
+            num_classes = max(1, len(files_by_class))
+            per_class = target_size // num_classes
+            files_needed = max(1, (per_class + jets_per_file - 1) // jets_per_file + 1)
+            selected = []
+            for cls, flist in sorted(files_by_class.items()):
+                selected.extend(flist[:files_needed])
+            if len(selected) < len(file_list):
+                print(f"Pre-selected {len(selected)} files for target_size={target_size:,}")
+            return selected
 
         @staticmethod
         def _all_files(data_dir: str) -> list[Path]:
