@@ -261,6 +261,76 @@ class JetClassDataset(Dataset):
         return self.labels.copy()
 
 
+class LazyJetClassDataset(Dataset):
+    """Lazy-loading JetClass dataset for val/test (sequential access).
+
+    Processes files on demand with an LRU cache. Much lower memory than
+    pre-loading, works well for sequential (non-shuffled) access.
+    """
+
+    def __init__(self, file_list: list[str | Path], max_particles: int = MAX_PART,
+                 cache_size: int = 5) -> None:
+        self.file_list = [str(p) for p in file_list]
+        self.max_particles = max_particles
+
+        # Build index: scan files for entry counts only (fast, no feature computation)
+        self._cum_sizes: list[int] = []
+        total = 0
+        for fpath in self.file_list:
+            with uproot.open(f"{fpath}:{TREE_NAME}") as tree:
+                n = tree.num_entries
+            total += n
+            self._cum_sizes.append(total)
+        self._total = total
+
+        # LRU cache: file_idx -> (feats, lv, masks, labels)
+        self._cache: dict[int, tuple] = {}
+        self._cache_order: list[int] = []
+        self._cache_size = cache_size
+        print(f"  LazyDataset: {self._total:,} jets across {len(self.file_list)} files")
+
+    def __len__(self) -> int:
+        return self._total
+
+    def _file_and_local(self, idx: int) -> tuple[int, int]:
+        """Map global index to (file_idx, local_idx)."""
+        for file_idx, cum in enumerate(self._cum_sizes):
+            if idx < cum:
+                local = idx - (self._cum_sizes[file_idx - 1] if file_idx > 0 else 0)
+                return file_idx, local
+        raise IndexError(f"Index {idx} out of range")
+
+    def _load_file(self, file_idx: int) -> tuple:
+        if file_idx in self._cache:
+            return self._cache[file_idx]
+        data = _process_file(self.file_list[file_idx], self.max_particles)
+        # Evict oldest if cache full
+        if len(self._cache) >= self._cache_size:
+            oldest = self._cache_order.pop(0)
+            del self._cache[oldest]
+        self._cache[file_idx] = data
+        self._cache_order.append(file_idx)
+        return data
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        file_idx, local = self._file_and_local(idx)
+        feats, lv, masks, labels = self._load_file(file_idx)
+        return {
+            "features": torch.from_numpy(feats[local]),
+            "lorentz_vectors": torch.from_numpy(lv[local]),
+            "mask": torch.from_numpy(masks[local]),
+            "label": int(labels[local]),
+        }
+
+    def get_all_labels(self) -> np.ndarray:
+        """Load labels from all files (needed for subsampling)."""
+        all_labels = []
+        for file_idx in range(len(self.file_list)):
+            _, _, _, labels = self._load_file(file_idx)
+            all_labels.append(labels)
+        return np.concatenate(all_labels)
+
+
 # ---------------------------------------------------------------------------
 # Collate function — transposes to model format
 # ---------------------------------------------------------------------------
@@ -382,9 +452,10 @@ if pl is not None:
 
             print(f"Files — train: {len(train_files)}, val: {len(val_files)}, test: {len(test_files)}")
 
+            # Pre-load train into memory (fast __getitem__), lazy-load val/test (low memory)
             self.train_dataset = JetClassDataset(train_files)
-            self.val_dataset = JetClassDataset(val_files)
-            self.test_dataset = JetClassDataset(test_files)
+            self.val_dataset = LazyJetClassDataset(val_files)
+            self.test_dataset = LazyJetClassDataset(test_files)
 
             # Apply subsampling to train set
             if self.train_size is not None and self.train_size < len(self.train_dataset):
