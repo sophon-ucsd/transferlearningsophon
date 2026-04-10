@@ -31,12 +31,27 @@ spec:
           requests:
             memory: "64Gi"
             cpu: "4"
+            nvidia.com/gpu: "1"
           limits:
             memory: "64Gi"
             cpu: "8"
+            nvidia.com/gpu: "1"
         volumeMounts:
         - name: pvc
           mountPath: /data
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: nvidia.com/gpu.product
+                operator: In
+                values:
+                - NVIDIA-A100-SXM4-80GB
+                - NVIDIA-A100-PCIE-40GB
+                - NVIDIA-A40
+                - NVIDIA-RTX-A6000
       volumes:
       - name: pvc
         persistentVolumeClaim:

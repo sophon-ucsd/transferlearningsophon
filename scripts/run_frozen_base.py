@@ -89,10 +89,11 @@ def run_single(train_emb, train_lab, val_loader, test_loader,
 
     if train_size < len(train_lab):
         indices = stratified_subsample(train_lab, train_size, seed)
-        emb = np.ascontiguousarray(train_emb[indices]).astype(np.float32)
+        # Index first (small), then convert to float32 (avoids 25GB temporary)
+        emb = train_emb[indices].astype(np.float32)
         lab = train_lab[indices].copy()
     else:
-        emb = np.ascontiguousarray(train_emb).astype(np.float32)
+        emb = train_emb.astype(np.float32)
         lab = train_lab.copy()
 
     # Bigger batch for bigger datasets — fewer steps, faster epochs
