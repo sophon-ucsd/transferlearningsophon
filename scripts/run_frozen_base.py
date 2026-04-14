@@ -37,7 +37,8 @@ class ArrayDataset(Dataset):
     def __len__(self):
         return len(self.labels)
     def __getitem__(self, idx):
-        return {"embeddings": torch.from_numpy(self.embeddings[idx]), "label": int(self.labels[idx])}
+        emb = torch.from_numpy(self.embeddings[idx].astype(np.float32))
+        return {"embeddings": emb, "label": int(self.labels[idx])}
 
 
 def train_one_epoch(model, loader, optimizer, device):
@@ -89,12 +90,12 @@ def run_single(train_emb, train_lab, val_loader, test_loader,
 
     if train_size < len(train_lab):
         indices = stratified_subsample(train_lab, train_size, seed)
-        # Index first (small), then convert to float32 (avoids 25GB temporary)
         emb = train_emb[indices].astype(np.float32)
         lab = train_lab[indices].copy()
     else:
-        emb = train_emb.astype(np.float32)
-        lab = train_lab.copy()
+        # Full dataset — keep as float16, convert per-batch in __getitem__
+        emb = np.asarray(train_emb)  # no copy if already contiguous
+        lab = train_lab
 
     # Bigger batch for bigger datasets — fewer steps, faster epochs
     if train_size >= 10_000_000:
