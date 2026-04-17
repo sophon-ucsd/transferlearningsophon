@@ -276,32 +276,38 @@ class LazyJetClassDataset(Dataset):
         self.file_list = [str(p) for p in file_list]
         self.max_particles = max_particles
 
-        # Build index: scan files for entry counts, cap at max_jets
-        self._file_entry_counts: list[int] = []  # actual entries per file
-        self._file_use_counts: list[int] = []     # entries we'll use per file
-        self._cum_sizes: list[int] = []
-        total = 0
+        # Build index: scan all files for entry counts
+        self._file_entry_counts: list[int] = []
         for fpath in self.file_list:
             with uproot.open(f"{fpath}:{TREE_NAME}") as tree:
-                n = tree.num_entries
-            self._file_entry_counts.append(n)
-            if max_jets is not None:
-                use = min(n, max_jets - total)
-                use = max(0, use)
-            else:
-                use = n
-            self._file_use_counts.append(use)
-            total += use
-            self._cum_sizes.append(total)
-            if max_jets is not None and total >= max_jets:
-                break  # don't even scan remaining files
-        self._total = total
+                self._file_entry_counts.append(tree.num_entries)
 
-        # Trim file lists to only files we actually use
-        n_files_used = len(self._cum_sizes)
-        self.file_list = self.file_list[:n_files_used]
-        self._file_entry_counts = self._file_entry_counts[:n_files_used]
-        self._file_use_counts = self._file_use_counts[:n_files_used]
+        # Distribute max_jets evenly across files (ensures class balance)
+        total_available = sum(self._file_entry_counts)
+        if max_jets is not None and max_jets < total_available:
+            ratio = max_jets / total_available
+            self._file_use_counts = [max(1, int(n * ratio)) for n in self._file_entry_counts]
+            # Trim to exact target
+            while sum(self._file_use_counts) > max_jets:
+                # Remove from largest
+                idx = max(range(len(self._file_use_counts)), key=lambda i: self._file_use_counts[i])
+                self._file_use_counts[idx] -= 1
+        else:
+            self._file_use_counts = list(self._file_entry_counts)
+
+        # Build cumulative sizes and trim empty files
+        self._cum_sizes: list[int] = []
+        total = 0
+        keep = []
+        for i, use in enumerate(self._file_use_counts):
+            if use > 0:
+                total += use
+                self._cum_sizes.append(total)
+                keep.append(i)
+        self._total = total
+        self.file_list = [self.file_list[i] for i in keep]
+        self._file_entry_counts = [self._file_entry_counts[i] for i in keep]
+        self._file_use_counts = [self._file_use_counts[i] for i in keep]
 
         # LRU cache: file_idx -> (feats, lv, masks, labels)
         self._cache: dict[int, tuple] = {}

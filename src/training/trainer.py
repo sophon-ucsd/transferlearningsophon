@@ -8,33 +8,33 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 import pytorch_lightning as pl
-from torchmetrics import Accuracy, AUROC
+from torchmetrics import Accuracy
 
 
 class JetClassifier(pl.LightningModule):
     """Lightning module for training jet classifiers with any transfer strategy.
 
     Logs: train_loss, train_acc, val_loss, val_acc, val_auc, test_loss, test_acc, test_auc.
-    Saves results.json at end of training with all metrics + config.
+    Uses sklearn roc_auc_score for AUC (torchmetrics multiclass AUROC is unreliable
+    when not all classes appear in every batch).
     """
 
     def __init__(self, model: torch.nn.Module, cfg) -> None:
-        """
-        Args:
-            model: SophonTransferModel from create_model().
-            cfg: full OmegaConf config dict.
-        """
         super().__init__()
         self.model = model
         self.cfg = cfg
         self.num_classes = cfg.model.num_classes
 
-        # Metrics
+        # Accuracy via torchmetrics (works fine per-batch)
         self.train_acc = Accuracy(task="multiclass", num_classes=self.num_classes)
         self.val_acc = Accuracy(task="multiclass", num_classes=self.num_classes)
-        self.val_auc = AUROC(task="multiclass", num_classes=self.num_classes)
         self.test_acc = Accuracy(task="multiclass", num_classes=self.num_classes)
-        self.test_auc = AUROC(task="multiclass", num_classes=self.num_classes)
+
+        # AUC computed from accumulated predictions (sklearn, epoch-level)
+        self._val_probs: list[torch.Tensor] = []
+        self._val_labels: list[torch.Tensor] = []
+        self._test_probs: list[torch.Tensor] = []
+        self._test_labels: list[torch.Tensor] = []
 
         # Timing
         self._train_start_time: float | None = None
@@ -54,24 +54,48 @@ class JetClassifier(pl.LightningModule):
     def validation_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> None:
         logits, _ = self(batch)
         loss = F.cross_entropy(logits, batch["label"])
-        probs = F.softmax(logits, dim=-1)
         preds = logits.argmax(dim=-1)
         self.val_acc(preds, batch["label"])
-        self.val_auc(probs, batch["label"])
         self.log("val_loss", loss, prog_bar=True, sync_dist=True)
         self.log("val_acc", self.val_acc, on_step=False, on_epoch=True, prog_bar=True)
-        self.log("val_auc", self.val_auc, on_step=False, on_epoch=True)
+        self._val_probs.append(F.softmax(logits, dim=-1).detach().cpu())
+        self._val_labels.append(batch["label"].detach().cpu())
+
+    def on_validation_epoch_end(self) -> None:
+        if not self._val_probs:
+            return
+        auc = self._compute_auc(self._val_probs, self._val_labels)
+        self.log("val_auc", auc, prog_bar=True)
+        self._val_probs.clear()
+        self._val_labels.clear()
 
     def test_step(self, batch: dict[str, torch.Tensor], batch_idx: int) -> None:
         logits, _ = self(batch)
         loss = F.cross_entropy(logits, batch["label"])
-        probs = F.softmax(logits, dim=-1)
         preds = logits.argmax(dim=-1)
         self.test_acc(preds, batch["label"])
-        self.test_auc(probs, batch["label"])
         self.log("test_loss", loss, sync_dist=True)
         self.log("test_acc", self.test_acc, on_step=False, on_epoch=True)
-        self.log("test_auc", self.test_auc, on_step=False, on_epoch=True)
+        self._test_probs.append(F.softmax(logits, dim=-1).detach().cpu())
+        self._test_labels.append(batch["label"].detach().cpu())
+
+    def on_test_epoch_end(self) -> None:
+        if not self._test_probs:
+            return
+        auc = self._compute_auc(self._test_probs, self._test_labels)
+        self.log("test_auc", auc)
+        self._test_probs.clear()
+        self._test_labels.clear()
+
+    @staticmethod
+    def _compute_auc(probs_list: list[torch.Tensor], labels_list: list[torch.Tensor]) -> float:
+        from sklearn.metrics import roc_auc_score
+        probs = torch.cat(probs_list).numpy()
+        labels = torch.cat(labels_list).numpy()
+        try:
+            return roc_auc_score(labels, probs, multi_class="ovr", average="macro")
+        except ValueError:
+            return 0.0
 
     def on_train_start(self) -> None:
         self._train_start_time = time.time()
