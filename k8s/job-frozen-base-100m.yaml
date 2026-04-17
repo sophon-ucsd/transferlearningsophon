@@ -39,6 +39,8 @@ spec:
         volumeMounts:
         - name: pvc
           mountPath: /data
+        - name: dshm
+          mountPath: /dev/shm
       affinity:
         nodeAffinity:
           preferredDuringSchedulingIgnoredDuringExecution:
@@ -56,3 +58,7 @@ spec:
       - name: pvc
         persistentVolumeClaim:
           claimName: transfer-learning-vol
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: "32Gi"
