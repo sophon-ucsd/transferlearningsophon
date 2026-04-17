@@ -106,7 +106,8 @@ def run_single(train_emb, train_lab, val_loader, test_loader,
         bs = 4096
 
     train_ds = ArrayDataset(emb, lab)
-    train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True, num_workers=0, drop_last=True)
+    n_workers = 4 if train_size >= 10_000_000 else 0
+    train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True, num_workers=n_workers, drop_last=True)
 
     model = MLPHead(128, 10, [256], dropout=0.1).to(device)
     param_count = sum(p.numel() for p in model.parameters())
