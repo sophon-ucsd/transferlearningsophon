@@ -38,7 +38,7 @@ spec:
                 data.train_size=$SIZE \
                 data.val_size=500000 \
                 data.test_size=500000 \
-                data.batch_size=64 \
+                data.batch_size=256 \
                 data.num_workers=4 \
                 training.optimizer.lr=5e-4 \
                 training.max_epochs=100 \
@@ -66,10 +66,9 @@ spec:
           mountPath: /data
       affinity:
         nodeAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-          - weight: 100
-            preference:
-              matchExpressions:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
               - key: nvidia.com/gpu.product
                 operator: In
                 values:
@@ -77,6 +76,8 @@ spec:
                 - NVIDIA-A100-PCIE-40GB
                 - NVIDIA-A40
                 - NVIDIA-RTX-A6000
+                - NVIDIA-RTX-A5000
+                - NVIDIA-TITAN-RTX
       volumes:
       - name: pvc
         persistentVolumeClaim:
