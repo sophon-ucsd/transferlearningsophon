@@ -51,32 +51,18 @@ def main():
         if args.max_files:
             flist = flist[:args.max_files]
 
-        all_feats, all_lv, all_masks, all_labels = [], [], [], []
-
         for fpath in flist:
+            fname = fpath.stem  # e.g. HToBB_042
             print(f"  {fpath.name}...", end="", flush=True)
             feats, lv, masks, labels = _process_file(str(fpath))
-            all_feats.append(feats)
-            all_lv.append(lv)
-            all_masks.append(masks)
-            all_labels.append(labels)
-            print(f" {len(labels):,} jets")
 
-        feats = np.concatenate(all_feats)
-        lv = np.concatenate(all_lv)
-        masks = np.concatenate(all_masks)
-        labels = np.concatenate(all_labels)
+            np.save(out / f"{fname}_features.npy", feats.astype(np.float16))
+            np.save(out / f"{fname}_lorentz.npy", lv.astype(np.float16))
+            np.save(out / f"{fname}_masks.npy", masks)
+            np.save(out / f"{fname}_labels.npy", labels)
 
-        # Save as float16 to save space (same as embeddings)
-        np.save(out / f"{cls_name}_features.npy", feats.astype(np.float16))
-        np.save(out / f"{cls_name}_lorentz.npy", lv.astype(np.float16))
-        np.save(out / f"{cls_name}_masks.npy", masks)
-        np.save(out / f"{cls_name}_labels.npy", labels)
-
-        n = len(labels)
-        total_jets += n
-        size_mb = (feats.nbytes + lv.nbytes + masks.nbytes + labels.nbytes) / 1e6
-        print(f"  {cls_name}: {n:,} jets, {size_mb:.0f} MB saved")
+            total_jets += len(labels)
+            print(f" {len(labels):,} jets saved")
 
     elapsed = time.time() - t0
     print(f"\nDone: {total_jets:,} jets in {elapsed/60:.1f} min")

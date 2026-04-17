@@ -30,7 +30,6 @@ from sklearn.metrics import roc_auc_score
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.models.sophon_wrapper import create_model, SophonTransferModel
-from src.data.subsampler import stratified_subsample
 from src.utils.reproducibility import seed_everything
 
 
@@ -73,35 +72,47 @@ def collate_fn(batch):
 
 
 def load_npy_features(data_dir, max_jets=None):
-    """Load pre-processed .npy feature files from a directory."""
-    d = Path(data_dir)
-    all_f, all_lv, all_m, all_lab = [], [], [], []
+    """Load pre-processed .npy feature files from a directory.
 
-    for fpath in sorted(d.glob("*_features.npy")):
-        cls = fpath.stem.replace("_features", "")
-        feats = np.load(str(fpath), mmap_mode="r")
-        lv = np.load(str(d / f"{cls}_lorentz.npy"), mmap_mode="r")
-        masks = np.load(str(d / f"{cls}_masks.npy"), mmap_mode="r")
-        labels = np.load(str(d / f"{cls}_labels.npy"), mmap_mode="r")
+    Streams files and stops early if max_jets is reached.
+    Memory usage = max_jets * (128*21 + 1) * 4 bytes.
+    """
+    d = Path(data_dir)
+    feature_files = sorted(d.glob("*_features.npy"))
+    if not feature_files:
+        raise FileNotFoundError(f"No *_features.npy files in {data_dir}")
+
+    all_f, all_lv, all_m, all_lab = [], [], [], []
+    total = 0
+
+    for fpath in feature_files:
+        stem = fpath.stem.replace("_features", "")
+        feats = np.load(str(fpath))
+        lv = np.load(str(d / f"{stem}_lorentz.npy"))
+        masks = np.load(str(d / f"{stem}_masks.npy"))
+        labels = np.load(str(d / f"{stem}_labels.npy"))
+
+        if max_jets and total + len(feats) > max_jets:
+            # Take only what we need from this file
+            need = max_jets - total
+            feats, lv, masks, labels = feats[:need], lv[:need], masks[:need], labels[:need]
+
         all_f.append(feats)
         all_lv.append(lv)
         all_m.append(masks)
         all_lab.append(labels)
-        print(f"  {cls}: {len(feats):,} jets")
+        total += len(feats)
+        print(f"  {stem}: {len(feats):,} jets (total: {total:,})")
+
+        if max_jets and total >= max_jets:
+            break
 
     features = np.concatenate(all_f)
     lorentz = np.concatenate(all_lv)
     masks = np.concatenate(all_m)
     labels = np.concatenate(all_lab)
 
-    if max_jets and max_jets < len(labels):
-        idx = stratified_subsample(labels, max_jets, seed=0)
-        features = features[idx]
-        lorentz = lorentz[idx]
-        masks = masks[idx]
-        labels = labels[idx]
-        print(f"  Subsampled to {len(labels):,}")
-
+    print(f"  Loaded: {len(labels):,} jets")
     return features, lorentz, masks, labels
 
 
@@ -154,22 +165,16 @@ def evaluate(model, loader, device):
     return total_loss / total, correct / total, auc
 
 
-def run_single(train_feats, train_lv, train_masks, train_labels,
+def run_single(train_dir,
                val_loader, test_loader,
                strategy, checkpoint, train_size, seed, device, output_dir,
                frozen_layers=4, lr=1e-3, backbone_lr=1e-4,
                epochs=100, patience=10, batch_size=256):
     seed_everything(seed)
 
-    # Subsample training data
-    if train_size < len(train_labels):
-        idx = stratified_subsample(train_labels, train_size, seed)
-        f = train_feats[idx].copy()
-        lv = train_lv[idx].copy()
-        m = train_masks[idx].copy()
-        lab = train_labels[idx].copy()
-    else:
-        f, lv, m, lab = train_feats, train_lv, train_masks, train_labels
+    # Load only enough training data for this run
+    print(f"    Loading {train_size:,} training jets...")
+    f, lv, m, lab = load_npy_features(train_dir, max_jets=train_size)
 
     train_ds = FeatureDataset(f, lv, m, lab)
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
@@ -274,40 +279,31 @@ def main():
     print(f"Device: {device}")
     print(f"Strategy: {args.strategy}")
 
-    # Load all data once
-    print("\nLoading train features...")
-    t0 = time.time()
-    train_f, train_lv, train_m, train_lab = load_npy_features(args.train_dir)
-    print(f"Train: {len(train_lab):,} jets, loaded in {time.time()-t0:.0f}s")
-
+    # Load val and test once (small, stays in memory)
     print("\nLoading val features...")
     val_f, val_lv, val_m, val_lab = load_npy_features(args.val_dir, max_jets=args.val_size)
-    val_ds = FeatureDataset(val_f.copy(), val_lv.copy(), val_m.copy(), val_lab.copy())
+    val_ds = FeatureDataset(val_f, val_lv, val_m, val_lab)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False,
                             num_workers=0, collate_fn=collate_fn)
     print(f"Val: {len(val_lab):,} jets")
 
     print("\nLoading test features...")
     test_f, test_lv, test_m, test_lab = load_npy_features(args.test_dir, max_jets=args.test_size)
-    test_ds = FeatureDataset(test_f.copy(), test_lv.copy(), test_m.copy(), test_lab.copy())
+    test_ds = FeatureDataset(test_f, test_lv, test_m, test_lab)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False,
                              num_workers=0, collate_fn=collate_fn)
     print(f"Test: {len(test_lab):,} jets")
 
-    # Run sweep
+    # Run sweep — train data loaded per-run (only what's needed)
     total = len(SIZES) * len(SEEDS)
     idx = 0
     for size in SIZES:
-        if size > len(train_lab):
-            print(f"\nSkipping size={size:,} (only {len(train_lab):,} available)")
-            idx += len(SEEDS)
-            continue
         for seed in SEEDS:
             idx += 1
             print(f"\n[{idx}/{total}] strategy={args.strategy} size={size:,} seed={seed}")
 
             results = run_single(
-                train_f, train_lv, train_m, train_lab,
+                args.train_dir,
                 val_loader, test_loader,
                 args.strategy, args.checkpoint, size, seed, device,
                 args.output_dir,
