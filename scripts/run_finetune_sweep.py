@@ -74,45 +74,58 @@ def collate_fn(batch):
 def load_npy_features(data_dir, max_jets=None):
     """Load pre-processed .npy feature files from a directory.
 
-    Streams files and stops early if max_jets is reached.
-    Memory usage = max_jets * (128*21 + 1) * 4 bytes.
+    Distributes max_jets evenly across classes to ensure all classes
+    are represented. Groups files by class name prefix.
     """
     d = Path(data_dir)
     feature_files = sorted(d.glob("*_features.npy"))
     if not feature_files:
         raise FileNotFoundError(f"No *_features.npy files in {data_dir}")
 
+    # Group files by class (e.g. HToBB_000, HToBB_001 -> HToBB)
+    files_by_class: dict[str, list[str]] = {}
+    for fpath in feature_files:
+        stem = fpath.stem.replace("_features", "")
+        # Class name: everything before the last _NNN
+        parts = stem.rsplit("_", 1)
+        cls = parts[0] if len(parts) == 2 and parts[1].isdigit() else stem
+        files_by_class.setdefault(cls, []).append(stem)
+
+    num_classes = len(files_by_class)
+    per_class = max_jets // num_classes if max_jets else None
+
     all_f, all_lv, all_m, all_lab = [], [], [], []
     total = 0
 
-    for fpath in feature_files:
-        stem = fpath.stem.replace("_features", "")
-        feats = np.load(str(fpath))
-        lv = np.load(str(d / f"{stem}_lorentz.npy"))
-        masks = np.load(str(d / f"{stem}_masks.npy"))
-        labels = np.load(str(d / f"{stem}_labels.npy"))
+    for cls, stems in sorted(files_by_class.items()):
+        cls_count = 0
+        for stem in stems:
+            if per_class and cls_count >= per_class:
+                break
+            feats = np.load(str(d / f"{stem}_features.npy"))
+            lv = np.load(str(d / f"{stem}_lorentz.npy"))
+            masks = np.load(str(d / f"{stem}_masks.npy"))
+            labels = np.load(str(d / f"{stem}_labels.npy"))
 
-        if max_jets and total + len(feats) > max_jets:
-            # Take only what we need from this file
-            need = max_jets - total
-            feats, lv, masks, labels = feats[:need], lv[:need], masks[:need], labels[:need]
+            if per_class and cls_count + len(feats) > per_class:
+                need = per_class - cls_count
+                feats, lv, masks, labels = feats[:need], lv[:need], masks[:need], labels[:need]
 
-        all_f.append(feats)
-        all_lv.append(lv)
-        all_m.append(masks)
-        all_lab.append(labels)
-        total += len(feats)
-        print(f"  {stem}: {len(feats):,} jets (total: {total:,})")
+            all_f.append(feats)
+            all_lv.append(lv)
+            all_m.append(masks)
+            all_lab.append(labels)
+            cls_count += len(feats)
+            total += len(feats)
 
-        if max_jets and total >= max_jets:
-            break
+        print(f"  {cls}: {cls_count:,} jets")
 
     features = np.concatenate(all_f)
     lorentz = np.concatenate(all_lv)
     masks = np.concatenate(all_m)
     labels = np.concatenate(all_lab)
 
-    print(f"  Loaded: {len(labels):,} jets")
+    print(f"  Total loaded: {len(labels):,} jets, {num_classes} classes")
     return features, lorentz, masks, labels
 
 
