@@ -97,13 +97,17 @@ def run_single(train_emb, train_lab, val_loader, test_loader,
         emb = np.asarray(train_emb)  # no copy if already contiguous
         lab = train_lab
 
-    # Bigger batch for bigger datasets — fewer steps, faster epochs
+    # Scale batch size with dataset — ensure at least ~50 steps per epoch
     if train_size >= 10_000_000:
         bs = 16384
     elif train_size >= 1_000_000:
         bs = 8192
-    else:
+    elif train_size >= 100_000:
         bs = 4096
+    elif train_size >= 10_000:
+        bs = 512
+    else:
+        bs = 128
 
     train_ds = ArrayDataset(emb, lab)
     n_workers = 4 if train_size >= 10_000_000 else 0
