@@ -198,8 +198,8 @@ def run_single(train_dir,
     model = model.to(device)
     total_params, trainable_params = SophonTransferModel.count_params(model)
 
-    # Optimizer
-    if strategy == "full_ft":
+    # Optimizer — differential LR for any pretrained strategy
+    if strategy in ("full_ft", "partial_ft"):
         param_groups = model.get_param_groups(backbone_lr, lr)
         optimizer = torch.optim.AdamW(param_groups, weight_decay=0.01)
     else:

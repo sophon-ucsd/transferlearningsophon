@@ -29,7 +29,8 @@ spec:
             --strategy partial_ft \
             --checkpoint models/JetClassII_Sophon/model.pt \
             --frozen-layers 4 \
-            --lr 5e-4 \
+            --lr 1e-3 \
+            --backbone-lr 1e-4 \
             --output-dir /data/results/partial_ft \
             --epochs 100 \
             --patience 10 \
