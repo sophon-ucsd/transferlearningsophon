@@ -34,7 +34,7 @@ spec:
             --output-dir /data/results/partial_ft \
             --epochs 100 \
             --patience 10 \
-            --batch-size 256 \
+            --batch-size 128 \
             --val-size 100000 \
             --test-size 500000
         resources:
@@ -53,9 +53,10 @@ spec:
           mountPath: /dev/shm
       affinity:
         nodeAffinity:
-          requiredDuringSchedulingIgnoredDuringExecution:
-            nodeSelectorTerms:
-            - matchExpressions:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
               - key: nvidia.com/gpu.product
                 operator: In
                 values:
