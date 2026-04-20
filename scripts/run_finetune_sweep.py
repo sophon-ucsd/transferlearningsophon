@@ -214,10 +214,21 @@ def run_single(train_dir,
     best_state = None
     patience_counter = 0
 
+    # Training history
+    history = {"epoch": [], "train_loss": [], "train_acc": [],
+               "val_loss": [], "val_acc": [], "val_auc": []}
+
     for epoch in range(epochs):
         train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, device)
         val_loss, val_acc, val_auc = evaluate(model, val_loader, device)
         scheduler.step()
+
+        history["epoch"].append(epoch + 1)
+        history["train_loss"].append(train_loss)
+        history["train_acc"].append(train_acc)
+        history["val_loss"].append(val_loss)
+        history["val_acc"].append(val_acc)
+        history["val_auc"].append(val_auc)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -235,32 +246,157 @@ def run_single(train_dir,
             print(f"    early stopping at epoch {epoch+1}")
             break
 
-    # Final test
+    # Load best model for final evaluation
     model.load_state_dict(best_state)
-    test_loss, test_acc, test_auc = evaluate(model, test_loader, device)
+
+    # Final test — collect per-sample predictions for ROC curves
+    model.eval()
+    all_probs, all_labels_test = [], []
+    test_loss_total = test_correct = test_total = 0
+    with torch.no_grad():
+        for batch in test_loader:
+            f_b = batch["features"].to(device)
+            lv_b = batch["lorentz_vectors"].to(device)
+            m_b = batch["mask"].to(device)
+            lab_b = batch["label"].to(device)
+            logits, _ = model(f_b, lv_b, m_b)
+            loss = F.cross_entropy(logits, lab_b)
+            test_loss_total += loss.item() * len(lab_b)
+            test_correct += (logits.argmax(-1) == lab_b).sum().item()
+            test_total += len(lab_b)
+            all_probs.append(F.softmax(logits, -1).cpu())
+            all_labels_test.append(lab_b.cpu())
+
+    all_probs = torch.cat(all_probs).numpy()
+    all_labels_test = torch.cat(all_labels_test).numpy()
+    test_loss = test_loss_total / test_total
+    test_acc = test_correct / test_total
+    try:
+        test_auc = roc_auc_score(all_labels_test, all_probs, multi_class="ovr", average="macro")
+    except ValueError:
+        test_auc = 0.0
+
+    # Per-class AUC
+    per_class_auc = {}
+    label_names = ["QCD", "Hbb", "Hcc", "Hgg", "H4q", "Hqql", "Zqq", "Wqq", "Tbqq", "Tbl"]
+    for cls_idx in range(10):
+        binary = (all_labels_test == cls_idx).astype(int)
+        if binary.sum() == 0 or binary.sum() == len(binary):
+            per_class_auc[label_names[cls_idx]] = 0.0
+            continue
+        try:
+            per_class_auc[label_names[cls_idx]] = float(
+                roc_auc_score(binary, all_probs[:, cls_idx]))
+        except ValueError:
+            per_class_auc[label_names[cls_idx]] = 0.0
+
     elapsed = time.time() - start
 
-    results = {
-        "strategy": strategy,
-        "train_size": train_size,
-        "seed": seed,
-        "num_classes": 10,
-        "best_val_loss": best_val_loss,
-        "best_val_acc": best_val_acc,
-        "val_auc_macro": best_val_auc,
-        "test_loss": test_loss,
-        "test_acc": test_acc,
-        "test_auc_macro": test_auc,
-        "total_params": total_params,
-        "trainable_params": trainable_params,
-        "num_epochs": epoch + 1,
-        "wall_clock_seconds": elapsed,
-    }
-
+    # === Save everything ===
     out = Path(output_dir) / f"{strategy}_{train_size}_{seed}"
     out.mkdir(parents=True, exist_ok=True)
-    with open(out / "results.json", "w") as f:
-        json.dump(results, f, indent=2)
+
+    # 1. Results JSON
+    results = {
+        "strategy": strategy, "train_size": train_size, "seed": seed,
+        "num_classes": 10,
+        "best_val_loss": best_val_loss, "best_val_acc": best_val_acc,
+        "val_auc_macro": best_val_auc,
+        "test_loss": test_loss, "test_acc": test_acc,
+        "test_auc_macro": test_auc,
+        "per_class_auc": per_class_auc,
+        "total_params": total_params, "trainable_params": trainable_params,
+        "num_epochs": epoch + 1, "wall_clock_seconds": elapsed,
+    }
+    with open(out / "results.json", "w") as f_out:
+        json.dump(results, f_out, indent=2)
+
+    # 2. Training history CSV
+    import csv
+    with open(out / "training_history.csv", "w", newline="") as f_out:
+        w = csv.DictWriter(f_out, fieldnames=history.keys())
+        w.writeheader()
+        for i in range(len(history["epoch"])):
+            w.writerow({k: history[k][i] for k in history})
+
+    # 3. Model checkpoint
+    torch.save(best_state, out / "best_model.pt")
+
+    # 4. Loss curves plot
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+    eps = history["epoch"]
+    ax1.plot(eps, history["train_loss"], label="Train", color="#4477AA")
+    ax1.plot(eps, history["val_loss"], label="Val", color="#EE6677")
+    ax1.set_xlabel("Epoch")
+    ax1.set_ylabel("Loss")
+    ax1.set_title(f"{strategy} {train_size:,} s{seed} — Loss")
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+
+    ax2.plot(eps, history["train_acc"], label="Train", color="#4477AA")
+    ax2.plot(eps, history["val_acc"], label="Val", color="#EE6677")
+    ax2.plot(eps, history["val_auc"], label="Val AUC", color="#228833", linestyle="--")
+    ax2.set_xlabel("Epoch")
+    ax2.set_ylabel("Metric")
+    ax2.set_title(f"{strategy} {train_size:,} s{seed} — Accuracy & AUC")
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    fig.savefig(out / "loss_curves.png", dpi=150)
+    plt.close()
+
+    # 5. ROC curves per class
+    from sklearn.metrics import roc_curve, auc as sk_auc
+    fig, ax = plt.subplots(figsize=(7, 6))
+    for cls_idx in range(10):
+        binary = (all_labels_test == cls_idx).astype(int)
+        if binary.sum() == 0:
+            continue
+        fpr, tpr, _ = roc_curve(binary, all_probs[:, cls_idx])
+        area = sk_auc(fpr, tpr)
+        ax.plot(fpr, tpr, label=f"{label_names[cls_idx]} (AUC={area:.3f})", linewidth=1)
+    ax.plot([0, 1], [0, 1], "k--", alpha=0.3)
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+    ax.set_title(f"ROC — {strategy} {train_size:,} s{seed}")
+    ax.legend(fontsize=7, loc="lower right")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out / "roc_curves.png", dpi=150)
+    plt.close()
+
+    # 6. Confusion matrix
+    from sklearn.metrics import confusion_matrix
+    preds = all_probs.argmax(axis=1)
+    cm = confusion_matrix(all_labels_test, preds, labels=list(range(10)))
+    cm_norm = cm.astype(float) / cm.sum(axis=1, keepdims=True)
+
+    fig, ax = plt.subplots(figsize=(8, 7))
+    im = ax.imshow(cm_norm, cmap="Blues", vmin=0, vmax=1)
+    ax.set_xticks(range(10))
+    ax.set_xticklabels(label_names, fontsize=7, rotation=45, ha="right")
+    ax.set_yticks(range(10))
+    ax.set_yticklabels(label_names, fontsize=7)
+    for i in range(10):
+        for j in range(10):
+            color = "white" if cm_norm[i, j] > 0.5 else "black"
+            ax.text(j, i, f"{cm_norm[i,j]:.2f}", ha="center", va="center",
+                    fontsize=6, color=color)
+    plt.colorbar(im, ax=ax, shrink=0.8)
+    ax.set_xlabel("Predicted")
+    ax.set_ylabel("True")
+    ax.set_title(f"Confusion Matrix — {strategy} {train_size:,} s{seed}")
+    fig.tight_layout()
+    fig.savefig(out / "confusion_matrix.png", dpi=150)
+    plt.close()
+
+    print(f"    Saved: results.json, training_history.csv, best_model.pt, "
+          f"loss_curves.png, roc_curves.png, confusion_matrix.png")
 
     return results
 
