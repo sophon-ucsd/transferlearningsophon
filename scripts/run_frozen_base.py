@@ -29,6 +29,52 @@ from src.utils.reproducibility import seed_everything
 SIZES = [10000, 30000, 100000, 300000, 1000000, 3000000, 10000000, 30000000, 100000000]
 SEEDS = [42, 123, 456]
 
+# Embedding file class name -> label index
+EMB_CLASS_MAP = {
+    "HToBB": 1, "HToCC": 2, "HToGG": 3, "HToWW4Q": 4, "HToWW2Q1L": 5,
+    "TTBar": 8, "TTBarLep": 9, "WToQQ": 7, "ZToQQ": 6, "ZJetsToNuNu": 0,
+}
+
+
+def _load_embeddings_subset(emb_dir, target_size, seed):
+    """Load embeddings class-balanced, only enough files to cover target_size."""
+    from pathlib import Path as P
+    d = P(emb_dir)
+    emb_files = sorted(d.glob("*_embeddings.npy"))
+
+    # Group by class
+    files_by_class = {}
+    for f in emb_files:
+        cls = f.stem.replace("_embeddings", "")
+        if cls in EMB_CLASS_MAP:
+            files_by_class[cls] = f
+
+    num_classes = len(files_by_class)
+    per_class = target_size // num_classes
+
+    all_emb, all_lab = [], []
+    rng = np.random.RandomState(seed)
+
+    for cls, fpath in sorted(files_by_class.items()):
+        label = EMB_CLASS_MAP[cls]
+        emb = np.load(str(fpath), mmap_mode="r")
+        n = len(emb)
+
+        if per_class < n:
+            idx = rng.choice(n, size=per_class, replace=False)
+            idx.sort()
+            chunk = emb[idx]
+        else:
+            chunk = np.array(emb)
+
+        # Keep as float16 for large sizes to avoid OOM; convert per-batch in __getitem__
+        all_emb.append(chunk)
+
+        all_emb.append(chunk)
+        all_lab.append(np.full(len(chunk), label, dtype=np.int64))
+
+    return np.concatenate(all_emb), np.concatenate(all_lab)
+
 
 class ArrayDataset(Dataset):
     def __init__(self, embeddings, labels):
@@ -123,11 +169,20 @@ def run_single(train_emb, train_lab, val_loader, test_loader,
     best_val_acc = best_val_auc = 0.0
     best_state = None
     patience_counter = 0
+    history = {"epoch": [], "train_loss": [], "train_acc": [],
+               "val_loss": [], "val_acc": [], "val_auc": []}
 
     for epoch in range(epochs):
         train_loss, train_acc = train_one_epoch(model, train_loader, optimizer, device)
         val_loss, val_acc, val_auc = evaluate(model, val_loader, device)
         scheduler.step()
+
+        history["epoch"].append(epoch + 1)
+        history["train_loss"].append(train_loss)
+        history["train_acc"].append(train_acc)
+        history["val_loss"].append(val_loss)
+        history["val_acc"].append(val_acc)
+        history["val_auc"].append(val_auc)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -140,26 +195,140 @@ def run_single(train_emb, train_lab, val_loader, test_loader,
         if patience_counter >= patience:
             break
 
-    # Final test on full test set
+    # Load best model for final test
     model.load_state_dict(best_state)
-    test_loss, test_acc, test_auc = evaluate(model, test_loader, device)
+
+    # Final test — collect per-sample predictions
+    model.eval()
+    all_probs, all_labels_test = [], []
+    test_loss_total = test_correct = test_total = 0
+    with torch.no_grad():
+        for batch in test_loader:
+            emb_b = batch["embeddings"].to(device)
+            lab_b = batch["label"].to(device)
+            logits = model(emb_b)
+            loss = F.cross_entropy(logits, lab_b)
+            test_loss_total += loss.item() * len(lab_b)
+            test_correct += (logits.argmax(-1) == lab_b).sum().item()
+            test_total += len(lab_b)
+            all_probs.append(F.softmax(logits, -1).cpu())
+            all_labels_test.append(lab_b.cpu())
+
+    all_probs = torch.cat(all_probs).numpy()
+    all_labels_test = torch.cat(all_labels_test).numpy()
+    test_loss = test_loss_total / test_total
+    test_acc = test_correct / test_total
+    from sklearn.metrics import roc_auc_score
+    try:
+        test_auc = roc_auc_score(all_labels_test, all_probs, multi_class="ovr", average="macro")
+    except ValueError:
+        test_auc = 0.0
+
+    # Per-class AUC
+    label_names = ["QCD", "Hbb", "Hcc", "Hgg", "H4q", "Hqql", "Zqq", "Wqq", "Tbqq", "Tbl"]
+    per_class_auc = {}
+    for cls_idx in range(10):
+        binary = (all_labels_test == cls_idx).astype(int)
+        if binary.sum() == 0 or binary.sum() == len(binary):
+            per_class_auc[label_names[cls_idx]] = 0.0
+            continue
+        try:
+            per_class_auc[label_names[cls_idx]] = float(
+                roc_auc_score(binary, all_probs[:, cls_idx]))
+        except ValueError:
+            per_class_auc[label_names[cls_idx]] = 0.0
+
     elapsed = time.time() - start
 
+    # === Save everything ===
+    out = Path(output_dir) / f"frozen_base_{train_size}_{seed}"
+    out.mkdir(parents=True, exist_ok=True)
+
+    # 1. Results JSON
     results = {
         "strategy": "frozen", "architecture": "base", "hidden_dims": [256],
         "train_size": train_size, "seed": seed, "num_classes": 10,
         "best_val_loss": best_val_loss, "best_val_acc": best_val_acc,
         "val_auc_macro": best_val_auc,
         "test_loss": test_loss, "test_acc": test_acc, "test_auc_macro": test_auc,
+        "per_class_auc": per_class_auc,
         "total_params": param_count, "trainable_params": param_count,
         "num_epochs": epoch + 1, "wall_clock_seconds": elapsed,
         "lr": lr, "dropout": 0.1, "batch_size": bs,
     }
-
-    out = Path(output_dir) / f"frozen_base_{train_size}_{seed}"
-    out.mkdir(parents=True, exist_ok=True)
     with open(out / "results.json", "w") as f:
         json.dump(results, f, indent=2)
+
+    # 2. Training history CSV
+    import csv
+    with open(out / "training_history.csv", "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=history.keys())
+        w.writeheader()
+        for i in range(len(history["epoch"])):
+            w.writerow({k: history[k][i] for k in history})
+
+    # 3. Model checkpoint
+    torch.save(best_state, out / "best_model.pt")
+
+    # 4. Loss curves plot
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+    eps = history["epoch"]
+    ax1.plot(eps, history["train_loss"], label="Train", color="#4477AA")
+    ax1.plot(eps, history["val_loss"], label="Val", color="#EE6677")
+    ax1.set_xlabel("Epoch"); ax1.set_ylabel("Loss")
+    ax1.set_title(f"Frozen {train_size:,} s{seed} — Loss")
+    ax1.legend(); ax1.grid(True, alpha=0.3)
+
+    ax2.plot(eps, history["train_acc"], label="Train Acc", color="#4477AA")
+    ax2.plot(eps, history["val_acc"], label="Val Acc", color="#EE6677")
+    ax2.plot(eps, history["val_auc"], label="Val AUC", color="#228833", linestyle="--")
+    ax2.set_xlabel("Epoch"); ax2.set_ylabel("Metric")
+    ax2.set_title(f"Frozen {train_size:,} s{seed} — Accuracy & AUC")
+    ax2.legend(); ax2.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out / "loss_curves.png", dpi=150); plt.close()
+
+    # 5. ROC curves per class
+    from sklearn.metrics import roc_curve, auc as sk_auc
+    fig, ax = plt.subplots(figsize=(7, 6))
+    for cls_idx in range(10):
+        binary = (all_labels_test == cls_idx).astype(int)
+        if binary.sum() == 0: continue
+        fpr, tpr, _ = roc_curve(binary, all_probs[:, cls_idx])
+        area = sk_auc(fpr, tpr)
+        ax.plot(fpr, tpr, label=f"{label_names[cls_idx]} (AUC={area:.3f})", linewidth=1)
+    ax.plot([0, 1], [0, 1], "k--", alpha=0.3)
+    ax.set_xlabel("FPR"); ax.set_ylabel("TPR")
+    ax.set_title(f"ROC — Frozen {train_size:,} s{seed}")
+    ax.legend(fontsize=7, loc="lower right"); ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out / "roc_curves.png", dpi=150); plt.close()
+
+    # 6. Confusion matrix
+    from sklearn.metrics import confusion_matrix
+    preds = all_probs.argmax(axis=1)
+    cm = confusion_matrix(all_labels_test, preds, labels=list(range(10)))
+    cm_norm = cm.astype(float) / cm.sum(axis=1, keepdims=True)
+    fig, ax = plt.subplots(figsize=(8, 7))
+    im = ax.imshow(cm_norm, cmap="Blues", vmin=0, vmax=1)
+    ax.set_xticks(range(10)); ax.set_xticklabels(label_names, fontsize=7, rotation=45, ha="right")
+    ax.set_yticks(range(10)); ax.set_yticklabels(label_names, fontsize=7)
+    for i in range(10):
+        for j in range(10):
+            color = "white" if cm_norm[i,j] > 0.5 else "black"
+            ax.text(j, i, f"{cm_norm[i,j]:.2f}", ha="center", va="center", fontsize=6, color=color)
+    plt.colorbar(im, ax=ax, shrink=0.8)
+    ax.set_xlabel("Predicted"); ax.set_ylabel("True")
+    ax.set_title(f"Confusion — Frozen {train_size:,} s{seed}")
+    fig.tight_layout()
+    fig.savefig(out / "confusion_matrix.png", dpi=150); plt.close()
+
+    print(f"    Saved: results.json, training_history.csv, best_model.pt, "
+          f"loss_curves.png, roc_curves.png, confusion_matrix.png")
     return results
 
 
@@ -182,13 +351,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    # Load all data once
-    print("\nLoading training embeddings...")
-    t0 = time.time()
-    train_emb, train_lab = _load_dir(args.train_dir)
-    print(f"Train: {len(train_lab):,} loaded in {time.time()-t0:.0f}s")
-
-    # Small val subset for early stopping
+    # Load val once (small, 100K subset)
     print("\nLoading validation embeddings...")
     val_emb, val_lab = _load_dir(args.val_dir)
     VAL_SUBSET = 100_000
@@ -199,26 +362,42 @@ def main():
     else:
         val_ds = ArrayDataset(np.ascontiguousarray(val_emb).astype(np.float32), val_lab)
     val_loader = DataLoader(val_ds, batch_size=8192, shuffle=False, num_workers=0)
+    del val_emb, val_lab  # free memory
 
-    # Full test set — only used once per run at the end
+    # Load test once (500K subset to avoid OOM on sklearn AUC)
     print("\nLoading test embeddings...")
     test_emb, test_lab = _load_dir(args.test_dir)
-    test_ds = ArrayDataset(np.ascontiguousarray(test_emb).astype(np.float32), test_lab)
+    TEST_SUBSET = 500_000
+    if len(test_lab) > TEST_SUBSET:
+        test_idx = stratified_subsample(test_lab, TEST_SUBSET, seed=0)
+        test_ds = ArrayDataset(np.ascontiguousarray(test_emb[test_idx]).astype(np.float32), test_lab[test_idx])
+        print(f"Test: {TEST_SUBSET:,} subset")
+    else:
+        test_ds = ArrayDataset(np.ascontiguousarray(test_emb).astype(np.float32), test_lab)
     test_loader = DataLoader(test_ds, batch_size=8192, shuffle=False, num_workers=0)
-    print(f"Test: {len(test_lab):,} (full eval at end of each run)")
+    print(f"Test: {len(test_ds):,} jets")
+    del test_emb, test_lab  # free memory
 
-    # Run 27 configs
+    # Training embeddings loaded per-run to avoid 25GB+ in memory
+    # Just scan the dir to know what's available
+    from pathlib import Path as P
+    train_files = sorted(P(args.train_dir).glob("*_embeddings.npy"))
+    print(f"\nTrain dir: {len(train_files)} embedding files")
+
+    # Run configs
     total = len(SIZES) * len(SEEDS)
     idx = 0
     for size in SIZES:
-        if size > len(train_lab):
-            print(f"\nSkipping size={size:,} (only {len(train_lab):,} available)")
-            idx += len(SEEDS)
-            continue
         for seed in SEEDS:
             idx += 1
             print(f"\n[{idx}/{total}] size={size:,} seed={seed}")
-            results = run_single(train_emb, train_lab, val_loader, test_loader,
+
+            # Load only what we need for this run (class-balanced)
+            print(f"    Loading {size:,} training embeddings...")
+            train_emb_run, train_lab_run = _load_embeddings_subset(
+                args.train_dir, size, seed)
+
+            results = run_single(train_emb_run, train_lab_run, val_loader, test_loader,
                                  size, seed, device, args.output_dir,
                                  epochs=args.epochs, patience=args.patience)
             print(f"  acc={results['test_acc']:.4f} auc={results['test_auc_macro']:.4f} "
