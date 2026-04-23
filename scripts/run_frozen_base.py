@@ -396,6 +396,10 @@ def main():
             print(f"    Loading {size:,} training embeddings...")
             train_emb_run, train_lab_run = _load_embeddings_subset(
                 args.train_dir, size, seed)
+            from collections import Counter
+            print(f"    Train labels: {dict(sorted(Counter(train_lab_run.tolist()).items()))}")
+            print(f"    Train shape: {train_emb_run.shape}, dtype: {train_emb_run.dtype}")
+            print(f"    Train range: [{train_emb_run.min():.4f}, {train_emb_run.max():.4f}]")
 
             results = run_single(train_emb_run, train_lab_run, val_loader, test_loader,
                                  size, seed, device, args.output_dir,
