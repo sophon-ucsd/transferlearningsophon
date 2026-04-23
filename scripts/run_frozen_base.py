@@ -69,8 +69,6 @@ def _load_embeddings_subset(emb_dir, target_size, seed):
 
         # Keep as float16 for large sizes to avoid OOM; convert per-batch in __getitem__
         all_emb.append(chunk)
-
-        all_emb.append(chunk)
         all_lab.append(np.full(len(chunk), label, dtype=np.int64))
 
     return np.concatenate(all_emb), np.concatenate(all_lab)
