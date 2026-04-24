@@ -452,9 +452,20 @@ def main():
             train_emb_run, train_lab_run = _load_embeddings_subset(
                 args.train_dir, size, seed)
             from collections import Counter
-            print(f"    Train labels: {dict(sorted(Counter(train_lab_run.tolist()).items()))}")
-            print(f"    Train shape: {train_emb_run.shape}, dtype: {train_emb_run.dtype}")
-            print(f"    Train range: [{train_emb_run.min():.4f}, {train_emb_run.max():.4f}]")
+            if isinstance(train_lab_run, list):
+                label_counts = Counter()
+                for arr in train_lab_run:
+                    label_counts.update(arr.tolist())
+                total_n = sum(len(e) for e in train_emb_run)
+                print(f"    Train labels: {dict(sorted(label_counts.items()))}")
+                print(f"    Train shape: ({total_n}, {train_emb_run[0].shape[1]}), "
+                      f"dtype: {train_emb_run[0].dtype} (multi-array)")
+                print(f"    Train range: [{min(e.min() for e in train_emb_run):.4f}, "
+                      f"{max(e.max() for e in train_emb_run):.4f}]")
+            else:
+                print(f"    Train labels: {dict(sorted(Counter(train_lab_run.tolist()).items()))}")
+                print(f"    Train shape: {train_emb_run.shape}, dtype: {train_emb_run.dtype}")
+                print(f"    Train range: [{train_emb_run.min():.4f}, {train_emb_run.max():.4f}]")
 
             results = run_single(train_emb_run, train_lab_run, val_loader, test_loader,
                                  size, seed, device, args.output_dir,
