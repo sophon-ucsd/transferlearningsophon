@@ -382,6 +382,10 @@ def main():
     parser.add_argument("--output-dir", default="/data/results/frozen_base")
     parser.add_argument("--sizes", default=None,
                         help="Comma-separated list of train sizes (default: all 9)")
+    parser.add_argument("--seeds", default=None,
+                        help="Comma-separated list of seeds (default: 42,123,456)")
+    parser.add_argument("--skip-existing", action="store_true",
+                        help="Skip runs where results.json + best_model.pt already exist")
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--patience", type=int, default=10)
     args = parser.parse_args()
@@ -389,6 +393,9 @@ def main():
     if args.sizes:
         global SIZES
         SIZES = [int(s) for s in args.sizes.split(",")]
+    if args.seeds:
+        global SEEDS
+        SEEDS = [int(s) for s in args.seeds.split(",")]
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
@@ -433,6 +440,12 @@ def main():
         for seed in SEEDS:
             idx += 1
             print(f"\n[{idx}/{total}] size={size:,} seed={seed}")
+
+            if args.skip_existing:
+                run_dir = Path(args.output_dir) / f"frozen_base_{size}_{seed}"
+                if (run_dir / "results.json").exists() and (run_dir / "best_model.pt").exists():
+                    print(f"    SKIP — already complete at {run_dir}")
+                    continue
 
             # Load only what we need for this run (class-balanced)
             print(f"    Loading {size:,} training embeddings...")
