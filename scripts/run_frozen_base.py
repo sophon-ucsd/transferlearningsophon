@@ -71,7 +71,13 @@ def _load_embeddings_subset(emb_dir, target_size, seed):
         all_emb.append(chunk)
         all_lab.append(np.full(len(chunk), label, dtype=np.int64))
 
-    return np.concatenate(all_emb), np.concatenate(all_lab)
+    total = sum(len(e) for e in all_emb)
+    if total <= 30_000_000:
+        # Small enough to concatenate safely
+        return np.concatenate(all_emb), np.concatenate(all_lab)
+    else:
+        # Return lists — use MultiArrayDataset to avoid np.concatenate OOM
+        return all_emb, all_lab
 
 
 class ArrayDataset(Dataset):
@@ -83,6 +89,33 @@ class ArrayDataset(Dataset):
     def __getitem__(self, idx):
         emb = torch.from_numpy(self.embeddings[idx].astype(np.float32))
         return {"embeddings": emb, "label": int(self.labels[idx])}
+
+
+class MultiArrayDataset(Dataset):
+    """Dataset from multiple per-class arrays without concatenating.
+    Avoids the 50GB peak memory from np.concatenate on 100M embeddings."""
+    def __init__(self, emb_list, lab_list):
+        self.emb_list = emb_list
+        self.lab_list = lab_list
+        self.cum_sizes = []
+        total = 0
+        for e in emb_list:
+            total += len(e)
+            self.cum_sizes.append(total)
+        self._total = total
+
+    def __len__(self):
+        return self._total
+
+    def __getitem__(self, idx):
+        # Find which array this index belongs to
+        for i, cum in enumerate(self.cum_sizes):
+            if idx < cum:
+                local = idx - (self.cum_sizes[i-1] if i > 0 else 0)
+                emb = torch.from_numpy(self.emb_list[i][local].astype(np.float32))
+                label = int(self.lab_list[i][local])
+                return {"embeddings": emb, "label": label}
+        raise IndexError(f"Index {idx} out of range")
 
 
 def train_one_epoch(model, loader, optimizer, device):
@@ -132,14 +165,23 @@ def run_single(train_emb, train_lab, val_loader, test_loader,
                epochs=50, patience=10, lr=1e-3):
     seed_everything(seed)
 
-    if train_size < len(train_lab):
-        indices = stratified_subsample(train_lab, train_size, seed)
-        emb = train_emb[indices].astype(np.float32)
-        lab = train_lab[indices].copy()
+    # Handle both concatenated arrays and list-of-arrays (for large datasets)
+    if isinstance(train_emb, list):
+        # Multi-array mode — use MultiArrayDataset directly, no concatenation
+        emb_list = train_emb
+        lab_list = train_lab
+        is_multi = True
+        total_size = sum(len(e) for e in emb_list)
     else:
-        # Full dataset — keep as float16, convert per-batch in __getitem__
-        emb = np.asarray(train_emb)  # no copy if already contiguous
-        lab = train_lab
+        is_multi = False
+        total_size = len(train_lab)
+        if train_size < total_size:
+            indices = stratified_subsample(train_lab, train_size, seed)
+            emb = train_emb[indices].astype(np.float32)
+            lab = train_lab[indices].copy()
+        else:
+            emb = np.asarray(train_emb)
+            lab = train_lab
 
     # Scale batch size with dataset — ensure at least ~50 steps per epoch
     if train_size >= 10_000_000:
@@ -153,9 +195,11 @@ def run_single(train_emb, train_lab, val_loader, test_loader,
     else:
         bs = 128
 
-    train_ds = ArrayDataset(emb, lab)
-    n_workers = 4 if train_size >= 10_000_000 else 0
-    train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True, num_workers=n_workers, drop_last=True)
+    if is_multi:
+        train_ds = MultiArrayDataset(emb_list, lab_list)
+    else:
+        train_ds = ArrayDataset(emb, lab)
+    train_loader = DataLoader(train_ds, batch_size=bs, shuffle=True, num_workers=0, drop_last=True)
 
     model = MLPHead(128, 10, [256], dropout=0.1).to(device)
     param_count = sum(p.numel() for p in model.parameters())
