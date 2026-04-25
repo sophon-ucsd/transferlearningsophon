@@ -65,6 +65,7 @@ spec:
                 - NVIDIA-A100-PCIE-40GB
                 - NVIDIA-A40
                 - NVIDIA-RTX-A6000
+                - NVIDIA-RTX-A5000
       volumes:
       - name: pvc
         persistentVolumeClaim:
