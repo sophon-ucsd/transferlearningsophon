@@ -72,11 +72,11 @@ def _load_embeddings_subset(emb_dir, target_size, seed):
         all_lab.append(np.full(len(chunk), label, dtype=np.int64))
 
     total = sum(len(e) for e in all_emb)
-    if total <= 30_000_000:
-        # Small enough to concatenate safely
+    if total <= 200_000_000:
+        # Concatenate path — fast vectorized indexing. 100M peaks ~51GB during concat (safe at 96GB pod limit).
         return np.concatenate(all_emb), np.concatenate(all_lab)
     else:
-        # Return lists — use MultiArrayDataset to avoid np.concatenate OOM
+        # Multi-array fallback for >200M (avoids OOM on smaller-memory pods).
         return all_emb, all_lab
 
 
