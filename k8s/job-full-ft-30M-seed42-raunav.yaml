@@ -38,14 +38,15 @@ spec:
             --batch-size 1024 \
             --val-size 100000 \
             --test-size 500000 \
+            --materialize-train \
             --skip-existing
         resources:
           requests:
-            memory: "200Gi"
+            memory: "256Gi"
             cpu: "6"
             nvidia.com/gpu: "1"
           limits:
-            memory: "200Gi"
+            memory: "256Gi"
             cpu: "8"
             nvidia.com/gpu: "1"
         volumeMounts:

@@ -39,6 +39,7 @@ spec:
             --batch-size 1024 \
             --val-size 100000 \
             --test-size 500000 \
+            --materialize-train \
             --skip-existing
         resources:
           requests:

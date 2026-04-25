@@ -119,7 +119,7 @@ def collate_fn(batch):
     }
 
 
-def load_npy_features(data_dir, max_jets=None, return_list=False):
+def load_npy_features(data_dir, max_jets=None, return_list=False, materialize=False):
     """Load pre-processed .npy feature files from a directory.
 
     Distributes max_jets evenly across classes to ensure all classes
@@ -128,6 +128,10 @@ def load_npy_features(data_dir, max_jets=None, return_list=False):
     If return_list=True, returns lists of per-file mmap'd arrays (no concatenation,
     avoids OOM at 30M+). Caller must use MultiFeatureDataset.
     Otherwise concatenates into single ndarrays (FeatureDataset compatible).
+
+    If materialize=True (only with return_list=True), reads each mmap'd array
+    fully into RAM before returning. Eliminates PVC reads during training but
+    requires enough pod RAM for total dataset size.
     """
     d = Path(data_dir)
     feature_files = sorted(d.glob("*_features.npy"))
@@ -173,7 +177,15 @@ def load_npy_features(data_dir, max_jets=None, return_list=False):
         print(f"  {cls}: {cls_count:,} jets")
 
     if return_list:
-        print(f"  Total loaded: {total:,} jets, {num_classes} classes (multi-array)")
+        if materialize:
+            print(f"  Materializing {total:,} jets into RAM (avoids PVC reads during training)...")
+            for i in range(len(all_f)):
+                all_f[i] = np.array(all_f[i])
+                all_lv[i] = np.array(all_lv[i])
+                all_m[i] = np.array(all_m[i])
+            print(f"  Total loaded: {total:,} jets, {num_classes} classes (multi-array, materialized)")
+        else:
+            print(f"  Total loaded: {total:,} jets, {num_classes} classes (multi-array, mmap'd)")
         return all_f, all_lv, all_m, all_lab
 
     features = np.concatenate(all_f)
@@ -247,14 +259,18 @@ def run_single(train_dir,
                val_loader, test_loader,
                strategy, checkpoint, train_size, seed, device, output_dir,
                frozen_layers=4, lr=1e-3, backbone_lr=1e-4,
-               epochs=100, patience=10, batch_size=256):
+               epochs=100, patience=10, batch_size=256,
+               materialize_train=False):
     seed_everything(seed)
 
     # Load only enough training data for this run.
-    # At >=10M, return list-of-arrays to avoid concat OOM (130GB at 30M, 435GB at 100M).
+    # At >=3M, return list-of-arrays to avoid concat hang under PVC contention.
+    # If materialize_train=True, read fully into RAM (no per-batch PVC reads).
     print(f"    Loading {train_size:,} training jets...")
-    use_multi = train_size >= 10_000_000
-    f, lv, m, lab = load_npy_features(train_dir, max_jets=train_size, return_list=use_multi)
+    use_multi = train_size >= 3_000_000
+    f, lv, m, lab = load_npy_features(
+        train_dir, max_jets=train_size,
+        return_list=use_multi, materialize=(use_multi and materialize_train))
 
     if use_multi:
         train_ds = MultiFeatureDataset(f, lv, m, lab)
@@ -497,6 +513,8 @@ def main():
     parser.add_argument("--seeds", default=None, help="Comma-separated seeds (default: 42,123,456)")
     parser.add_argument("--skip-existing", action="store_true",
                         help="Skip runs where results.json + best_model.pt already exist")
+    parser.add_argument("--materialize-train", action="store_true",
+                        help="Read mmap'd train arrays fully into RAM (avoids PVC reads during training)")
     parser.add_argument("--frozen-layers", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--backbone-lr", type=float, default=1e-4)
@@ -561,6 +579,7 @@ def main():
                 lr=args.lr, backbone_lr=args.backbone_lr,
                 epochs=args.epochs, patience=args.patience,
                 batch_size=args.batch_size,
+                materialize_train=args.materialize_train,
             )
 
             print(f"  acc={results['test_acc']:.4f} auc={results['test_auc_macro']:.4f} "
