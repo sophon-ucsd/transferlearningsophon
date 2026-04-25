@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: full-ft-10m-raunav
+  name: partial-ft-30m-s123-raunav
   namespace: cms-ml
 spec:
   backoffLimit: 1
@@ -26,13 +26,14 @@ spec:
             --train-dir /data/features/train_100M \
             --val-dir /data/features/val_5M \
             --test-dir /data/features/test_20M \
-            --strategy full_ft \
+            --strategy partial_ft \
+            --frozen-layers 4 \
             --checkpoint models/JetClassII_Sophon/model.pt \
-            --sizes 10000000 \
-            --seeds 42 \
+            --sizes 30000000 \
+            --seeds 123 \
             --lr 1e-3 \
             --backbone-lr 1e-4 \
-            --output-dir /data/results/full_ft \
+            --output-dir /data/results/partial_ft \
             --epochs 100 \
             --patience 10 \
             --batch-size 1024 \
@@ -41,11 +42,11 @@ spec:
             --skip-existing
         resources:
           requests:
-            memory: "128Gi"
+            memory: "200Gi"
             cpu: "6"
             nvidia.com/gpu: "1"
           limits:
-            memory: "128Gi"
+            memory: "200Gi"
             cpu: "8"
             nvidia.com/gpu: "1"
         volumeMounts:
