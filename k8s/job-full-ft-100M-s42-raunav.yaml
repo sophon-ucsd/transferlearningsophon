@@ -35,7 +35,7 @@ spec:
             --output-dir /data/results/full_ft \
             --epochs 50 \
             --patience 8 \
-            --batch-size 1024 \
+            --batch-size 512 \
             --val-size 100000 \
             --test-size 500000 \
             --skip-existing
