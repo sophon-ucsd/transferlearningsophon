@@ -68,6 +68,12 @@ spec:
                 - NVIDIA-A40
                 - NVIDIA-RTX-A6000
                 - NVIDIA-RTX-A5000
+                - NVIDIA-GeForce-RTX-3090
+                - NVIDIA-A10
+                - NVIDIA-L40
+                - NVIDIA-L40S
+                - NVIDIA-L4
+                - NVIDIA-GeForce-RTX-4090
       volumes:
       - name: pvc
         persistentVolumeClaim:
