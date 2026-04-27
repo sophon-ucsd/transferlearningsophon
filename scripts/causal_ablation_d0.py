@@ -106,10 +106,24 @@ def forward_to_logits(backbone: SophonTransferModel, head: MLPHead,
 
 @torch.no_grad()
 def run_pass(backbone, head, feats, lorentz, masks,
-             zero_index: int | None,
-             device, batch_size: int = 512) -> np.ndarray:
-    """Returns (N, 10) softmax probabilities. If zero_index is set, sets
-    features[:, :, zero_index] = 0 before each forward pass.
+             intervention: str,
+             device,
+             d0_pool: np.ndarray | None = None,
+             d0err_pool: np.ndarray | None = None,
+             rng: np.random.Generator | None = None,
+             batch_size: int = 512) -> np.ndarray:
+    """Returns (N, 10) softmax probabilities under one of three interventions.
+
+    intervention:
+        "intact"   — features unchanged
+        "zero"     — features[:, :, D0_FEATURE_INDEX] = 0 for charged particles only
+        "resample" — replace d0 (and d0err) at each charged particle with random
+                     samples drawn from the marginal pool of charged-particle d0.
+                     Charged particles are identified by features[:, :, isCH] flag,
+                     more robustly by features[:, :, D0ERR_INDEX] > 0.
+
+    Audit 3 from the poster review: resample addresses the off-manifold critique
+    that zero-ablation places the model in an unphysical regime.
     """
     amp_dtype = torch.bfloat16 if (device.type == "cuda" and torch.cuda.is_bf16_supported()) \
                 else torch.float32
@@ -117,8 +131,26 @@ def run_pass(backbone, head, feats, lorentz, masks,
     n = len(feats)
     for i in range(0, n, batch_size):
         f_b = feats[i:i+batch_size].copy()  # don't mutate the source array
-        if zero_index is not None:
-            f_b[:, :, zero_index] = 0
+        if intervention == "zero":
+            # Zero d0 only at positions where the original was non-zero
+            # (i.e., charged particles with valid IP measurement). Neutrals
+            # already have d0=0 by convention; touching them is a no-op anyway.
+            f_b[:, :, D0_FEATURE_INDEX] = 0.0
+        elif intervention == "resample":
+            assert d0_pool is not None and rng is not None
+            # Charged particles in this batch: nonzero d0err (feature 12)
+            charged_mask = f_b[:, :, D0_FEATURE_INDEX + 1] > 0  # d0err > 0 → charged
+            n_charged = int(charged_mask.sum())
+            if n_charged > 0:
+                idx = rng.integers(0, len(d0_pool), size=n_charged)
+                f_b[charged_mask, D0_FEATURE_INDEX] = d0_pool[idx]
+                if d0err_pool is not None:
+                    # Redraw d0err coupled to the new d0 from the same indices,
+                    # preserving the (d0, d0err) joint distribution on the pool.
+                    f_b[charged_mask, D0_FEATURE_INDEX + 1] = d0err_pool[idx]
+        elif intervention != "intact":
+            raise ValueError(f"unknown intervention: {intervention}")
+
         # Transpose to (B, 17, 128) and (B, 4, 128) for Sophon's API
         f_t = torch.from_numpy(f_b.astype(np.float32)).transpose(1, 2).to(device, non_blocking=True)
         v_t = torch.from_numpy(np.asarray(lorentz[i:i+batch_size], dtype=np.float32)).transpose(1, 2).to(device, non_blocking=True)
@@ -126,6 +158,21 @@ def run_pass(backbone, head, feats, lorentz, masks,
         logits = forward_to_logits(backbone, head, f_t, v_t, m_t, device, amp_dtype)
         out_probs.append(F.softmax(logits.float(), dim=-1).cpu().numpy())
     return np.concatenate(out_probs, axis=0)
+
+
+def build_d0_pool(feats: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Marginal pool of (d0, d0err) over all charged particles in the test set.
+
+    Charged particles identified by d0err > 0 (feature index 12). The pool acts
+    as the "resample" reservoir: we draw with replacement from this distribution.
+    For Audit 3 we use the test-set marginal as a stand-in for the training-set
+    marginal — this is fine because Sophon's training and test data come from the
+    same JetClass-1 generator and selection.
+    """
+    d0 = feats[:, :, D0_FEATURE_INDEX]
+    d0err = feats[:, :, D0_FEATURE_INDEX + 1]
+    mask = d0err > 0
+    return d0[mask].astype(np.float32), d0err[mask].astype(np.float32)
 
 
 def per_class_auc(labels, probs) -> dict:
@@ -151,6 +198,7 @@ def main():
     p.add_argument("--output", default="results/arm3/causal_ablation_results.csv")
     p.add_argument("--n-per-class", type=int, default=10000)
     p.add_argument("--batch-size", type=int, default=512)
+    p.add_argument("--seed", type=int, default=42)
     args = p.parse_args()
 
     out_path = Path(args.output)
@@ -180,34 +228,55 @@ def main():
     feats, lorentz, masks, labels = load_features(Path(args.features_dir), args.n_per_class)
     print(f"  total: {len(labels):,} jets, features shape {feats.shape}")
 
-    # Run two passes
-    print("\n=== Pass A: d0 INTACT ===")
+    # Build resample pool from the test set's charged-particle (d0, d0err) marginal
+    # (Audit 3: addresses off-manifold critique of zero-ablation)
+    d0_pool, d0err_pool = build_d0_pool(feats)
+    print(f"\nResample pool: {len(d0_pool):,} charged-particle (d0, d0err) pairs")
+    rng = np.random.default_rng(args.seed)
+
+    # Run three passes
+    print("\n=== Pass A: d0 INTACT (baseline) ===")
     t0 = time.time()
     probs_intact = run_pass(backbone, head, feats, lorentz, masks,
-                            zero_index=None, device=device, batch_size=args.batch_size)
+                            intervention="intact", device=device,
+                            batch_size=args.batch_size)
     print(f"  done in {time.time() - t0:.1f}s")
 
     print(f"\n=== Pass B: d0 ZEROED at feature index {D0_FEATURE_INDEX} ===")
     t0 = time.time()
     probs_zerod0 = run_pass(backbone, head, feats, lorentz, masks,
-                            zero_index=D0_FEATURE_INDEX, device=device, batch_size=args.batch_size)
+                            intervention="zero", device=device,
+                            batch_size=args.batch_size)
+    print(f"  done in {time.time() - t0:.1f}s")
+
+    print(f"\n=== Pass C: d0 RESAMPLED from charged-particle marginal pool ===")
+    t0 = time.time()
+    probs_resample = run_pass(backbone, head, feats, lorentz, masks,
+                              intervention="resample", device=device,
+                              d0_pool=d0_pool, d0err_pool=d0err_pool, rng=rng,
+                              batch_size=args.batch_size)
     print(f"  done in {time.time() - t0:.1f}s")
 
     # Per-class AUC for each
     auc_intact = per_class_auc(labels, probs_intact)
     auc_zerod0 = per_class_auc(labels, probs_zerod0)
+    auc_resample = per_class_auc(labels, probs_resample)
 
     print("\n--- Results ---")
-    print(f"{'class':>10} {'intact':>10} {'d0=0':>10} {'delta':>10}")
+    print(f"{'class':>10} {'intact':>10} {'d0=0':>10} {'resamp':>10} "
+          f"{'Δ_zero':>10} {'Δ_resamp':>10}")
     rows = []
     for k in LABEL_NAMES + ["macro"]:
-        a, b = auc_intact[k], auc_zerod0[k]
-        print(f"{k:>10} {a:>10.4f} {b:>10.4f} {a - b:>+10.4f}")
+        a, b, c = auc_intact[k], auc_zerod0[k], auc_resample[k]
+        print(f"{k:>10} {a:>10.4f} {b:>10.4f} {c:>10.4f} "
+              f"{a - b:>+10.4f} {a - c:>+10.4f}")
         rows.append({
             "class": k,
-            "auc_intact": a,
-            "auc_d0_zeroed": b,
-            "delta": a - b,
+            "baseline_AUC": a,
+            "zero_AUC": b,
+            "resample_AUC": c,
+            "delta_zero": a - b,
+            "delta_resample": a - c,
         })
     df = pd.DataFrame(rows)
     df.to_csv(out_path, index=False, float_format="%.6f")
@@ -215,10 +284,14 @@ def main():
 
     # Sanity check
     if not np.isnan(auc_intact.get("Hbb", float("nan"))):
-        delta_hbb = auc_intact["Hbb"] - auc_zerod0["Hbb"]
-        if delta_hbb < 0.05:
-            print(f"\nWARNING: Hbb AUC dropped by only {delta_hbb:+.4f} after zeroing d0.")
-            print("Expected drop ~0.10. Check input feature indexing.")
+        delta_hbb_zero = auc_intact["Hbb"] - auc_zerod0["Hbb"]
+        delta_hbb_res  = auc_intact["Hbb"] - auc_resample["Hbb"]
+        if delta_hbb_zero < 0.03:
+            print(f"\nFLAG: Hbb AUC dropped by only {delta_hbb_zero:+.4f} on zero-ablation.")
+            print("  Below stopping-rule threshold of 0.03 — interpretability story changes if d0 isn't used.")
+        if delta_hbb_res < 0.03:
+            print(f"\nFLAG: Hbb AUC dropped by only {delta_hbb_res:+.4f} on resample-ablation.")
+            print("  Headline drop should use resample value; flag for user.")
 
 
 if __name__ == "__main__":
