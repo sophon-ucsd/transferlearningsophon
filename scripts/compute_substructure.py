@@ -28,7 +28,9 @@ from src.data.subsampler import stratified_subsample
 TREE_NAME = "tree"
 PARTICLE_KEYS = [
     "part_px", "part_py", "part_pz", "part_energy",
-    "part_deta", "part_dphi", "part_d0val", "part_dzval", "part_charge",
+    "part_deta", "part_dphi",
+    "part_d0val", "part_d0err", "part_dzval", "part_dzerr",
+    "part_charge",
 ]
 LABEL_KEYS = [
     "label_QCD", "label_Hbb", "label_Hcc", "label_Hgg",
@@ -38,12 +40,14 @@ LABEL_KEYS = [
 JET_R = 0.8  # AK8 jets
 
 
-def compute_observables_for_jet(px, py, pz, energy, d0val, dzval, charge):
+def compute_observables_for_jet(px, py, pz, energy,
+                                d0val, d0err, dzval, dzerr, charge):
     """Compute all substructure observables for one jet.
 
     Args:
         px, py, pz, energy: particle 4-momenta arrays
-        d0val, dzval: impact parameters
+        d0val, d0err: transverse impact parameter and its uncertainty (per particle)
+        dzval, dzerr: longitudinal impact parameter and its uncertainty
         charge: particle charges
 
     Returns:
@@ -147,9 +151,48 @@ def compute_observables_for_jet(px, py, pz, energy, d0val, dzval, charge):
     C2 = e3 / max(e2**3, 1e-30) if e2 > 1e-20 else 0.0
 
     # --- Track-based observables ---
-    mean_d0 = np.mean(np.abs(d0val)) if len(d0val) > 0 else 0.0
-    mean_dz = np.mean(np.abs(dzval)) if len(dzval) > 0 else 0.0
-    charged_frac = np.mean(charge != 0) if len(charge) > 0 else 0.0
+    # Restrict to charged particles with valid IP uncertainty (neutrals have err=0).
+    # Charged hadrons / leptons have d0err > 0 in JetClass-1.
+    abs_d0 = np.abs(d0val)
+    abs_dz = np.abs(dzval)
+    charged_mask_d0 = (d0err > 0) if len(d0err) > 0 else np.zeros_like(abs_d0, dtype=bool)
+    charged_mask_dz = (dzerr > 0) if len(dzerr) > 0 else np.zeros_like(abs_dz, dtype=bool)
+
+    if np.any(charged_mask_d0):
+        d0_charged = abs_d0[charged_mask_d0]
+        d0err_charged = d0err[charged_mask_d0]
+        d0_sig = d0_charged / np.maximum(d0err_charged, 1e-9)  # significance |d0|/sigma
+        mean_abs_d0 = float(np.mean(d0_charged))
+        max_abs_d0 = float(np.max(d0_charged))
+        # Top-3 most-displaced charged particles
+        if len(d0_charged) >= 3:
+            top3_sum_abs_d0 = float(np.sort(d0_charged)[-3:].sum())
+        else:
+            top3_sum_abs_d0 = float(d0_charged.sum())
+        count_d0_gt_1sigma = int(np.sum(d0_sig > 1.0))
+        count_d0_gt_2sigma = int(np.sum(d0_sig > 2.0))
+    else:
+        mean_abs_d0 = max_abs_d0 = top3_sum_abs_d0 = 0.0
+        count_d0_gt_1sigma = count_d0_gt_2sigma = 0
+
+    if np.any(charged_mask_dz):
+        dz_charged = abs_dz[charged_mask_dz]
+        dzerr_charged = dzerr[charged_mask_dz]
+        dz_sig = dz_charged / np.maximum(dzerr_charged, 1e-9)
+        mean_abs_dz = float(np.mean(dz_charged))
+        max_abs_dz = float(np.max(dz_charged))
+        if len(dz_charged) >= 3:
+            top3_sum_abs_dz = float(np.sort(dz_charged)[-3:].sum())
+        else:
+            top3_sum_abs_dz = float(dz_charged.sum())
+        count_dz_gt_1sigma = int(np.sum(dz_sig > 1.0))
+        count_dz_gt_2sigma = int(np.sum(dz_sig > 2.0))
+    else:
+        mean_abs_dz = max_abs_dz = top3_sum_abs_dz = 0.0
+        count_dz_gt_1sigma = count_dz_gt_2sigma = 0
+
+    charged_frac = float(np.mean(charge != 0)) if len(charge) > 0 else 0.0
+    n_charged = int(np.sum(charged_mask_d0))
 
     return {
         "jet_mass": jet_mass,
@@ -162,9 +205,23 @@ def compute_observables_for_jet(px, py, pz, energy, d0val, dzval, charge):
         "tau32": tau32,
         "C2": C2,
         "width": width,
-        "mean_d0": mean_d0,
-        "mean_dz": mean_dz,
+        # d0 family — kept "mean_d0" alias for backward compat
+        "mean_d0": mean_abs_d0,
+        "mean_abs_d0": mean_abs_d0,
+        "max_abs_d0": max_abs_d0,
+        "top3_sum_abs_d0": top3_sum_abs_d0,
+        "count_d0_gt_1sigma": count_d0_gt_1sigma,
+        "count_d0_gt_2sigma": count_d0_gt_2sigma,
+        # dz family — parallel
+        "mean_dz": mean_abs_dz,
+        "mean_abs_dz": mean_abs_dz,
+        "max_abs_dz": max_abs_dz,
+        "top3_sum_abs_dz": top3_sum_abs_dz,
+        "count_dz_gt_1sigma": count_dz_gt_1sigma,
+        "count_dz_gt_2sigma": count_dz_gt_2sigma,
+        # auxiliary
         "charged_frac": charged_frac,
+        "n_charged": n_charged,
     }
 
 
@@ -216,8 +273,20 @@ def main():
         file_groups[fi].append((i, li))
 
     # Compute observables
-    obs_names = ["jet_mass", "jet_pt", "multiplicity", "tau1", "tau2", "tau3",
-                 "tau21", "tau32", "C2", "width", "mean_d0", "mean_dz", "charged_frac"]
+    obs_names = [
+        # substructure
+        "jet_mass", "jet_pt", "multiplicity",
+        "tau1", "tau2", "tau3", "tau21", "tau32",
+        "C2", "width",
+        # d0 family
+        "mean_d0", "mean_abs_d0", "max_abs_d0", "top3_sum_abs_d0",
+        "count_d0_gt_1sigma", "count_d0_gt_2sigma",
+        # dz family
+        "mean_dz", "mean_abs_dz", "max_abs_dz", "top3_sum_abs_dz",
+        "count_dz_gt_1sigma", "count_dz_gt_2sigma",
+        # aux
+        "charged_frac", "n_charged",
+    ]
     results = {name: np.zeros(len(indices)) for name in obs_names}
     result_labels = np.zeros(len(indices), dtype=int)
 
@@ -238,7 +307,9 @@ def main():
                 pz=arrays["part_pz"][local_idx],
                 energy=arrays["part_energy"][local_idx],
                 d0val=arrays["part_d0val"][local_idx],
+                d0err=arrays["part_d0err"][local_idx],
                 dzval=arrays["part_dzval"][local_idx],
+                dzerr=arrays["part_dzerr"][local_idx],
                 charge=arrays["part_charge"][local_idx],
             )
             for name in obs_names:
@@ -250,11 +321,21 @@ def main():
             elapsed = time.time() - t0
             print(f"  {files_done}/{len(file_groups)} files, {elapsed:.0f}s")
 
-    # Save
+    # Save: npz (legacy) + parquet (for downstream pandas/duckdb / probing scripts)
     np.savez(args.output, labels=result_labels, **results)
     elapsed = time.time() - t0
     print(f"\nDone: {len(indices):,} jets, {elapsed:.0f}s")
-    print(f"Saved to {args.output}")
+    print(f"Saved npz to {args.output}")
+
+    parquet_path = Path(args.output).with_suffix(".parquet")
+    try:
+        import pandas as pd
+        df = pd.DataFrame({"label": result_labels, **results})
+        df["jet_id"] = np.arange(len(df), dtype=np.int64)
+        df.to_parquet(parquet_path, index=False)
+        print(f"Saved parquet to {parquet_path}")
+    except ImportError:
+        print(f"  (pandas/pyarrow not installed; skipped parquet save)")
 
     # Print summary
     from collections import Counter
