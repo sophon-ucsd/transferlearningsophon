@@ -87,15 +87,18 @@ def fit_centroids_and_cov(emb: np.ndarray, lab: np.ndarray, training_classes: se
 
 def mahalanobis_score(emb: np.ndarray, centroids: dict[int, np.ndarray],
                       inv_cov: np.ndarray) -> np.ndarray:
-    """Higher score => more anomalous. -min_c (x-mu_c)^T inv_cov (x-mu_c)."""
+    """Higher score => more anomalous.
+    score(x) = min_c (x - mu_c)^T inv_cov (x - mu_c)
+    The min Mahalanobis distance to any TRAINING-class centroid is itself the
+    "how far from any seen class" measure: small for in-distribution, large for OOD.
+    """
     n = len(emb)
     n_classes = len(centroids)
     distances = np.empty((n, n_classes), dtype=np.float64)
     for j, (_, mu) in enumerate(sorted(centroids.items())):
         diff = emb - mu  # (n, d)
         distances[:, j] = np.einsum("nd,de,ne->n", diff, inv_cov, diff)
-    min_d = distances.min(axis=1)
-    return -min_d  # negate so higher = more anomalous
+    return distances.min(axis=1)  # higher = more anomalous
 
 
 def main():
