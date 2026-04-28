@@ -53,10 +53,12 @@ results/**
 !results/arm2/
 !results/arm3/
 !results/arm4/
+!results/main_plots/
 !results/arm1/**
 !results/arm2/**
 !results/arm3/**
 !results/arm4/**
+!results/main_plots/**
 results/arm*/observables_*.parquet
 results/arm*/observables_*.npz
 results/arm*/*.pt
