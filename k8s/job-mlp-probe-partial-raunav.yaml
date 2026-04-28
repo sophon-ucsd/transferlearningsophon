@@ -1,0 +1,70 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: mlp-probe-partial-raunav
+  namespace: cms-ml
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: mlp-probe-partial
+        image: gitlab-registry.nrp-nautilus.io/escheuller/transfer-learning:cu121
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -e
+          git clone https://github.com/raunavm/transferlearningsophon.git
+          cd transferlearningsophon
+          pip install scikit-learn pyarrow
+
+          mkdir -p /data/results/poster
+
+          # MLP probe for partial-FT-3M-seed42 embeddings (already on PVC).
+          # Uses pretrained as the "anchor" arg so the script's two-model code path
+          # works; the partial column is what we keep.
+          PYTHONUNBUFFERED=1 python3 scripts/probe_observables_mlp.py \
+            --observables /data/results/poster/observables_test_100k.parquet \
+            --pretrained-dir /data/embeddings_test_20M \
+            --finetuned-dir  /data/embeddings_partial_ft_3M_seed42_test100k \
+            --finetune-label "partial_ft_3M_seed42" \
+            --output /data/results/poster/mlp_probing_partial_results.csv \
+            --n-per-class 10000 \
+            --n-bootstrap 100 \
+            --seed 42
+        resources:
+          requests:
+            memory: "32Gi"
+            cpu: "4"
+            nvidia.com/gpu: "1"
+          limits:
+            memory: "32Gi"
+            cpu: "8"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: pvc
+          mountPath: /data
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.product
+                operator: In
+                values:
+                - NVIDIA-A100-SXM4-80GB
+                - NVIDIA-A100-PCIE-40GB
+                - NVIDIA-A40
+                - NVIDIA-RTX-A6000
+                - NVIDIA-RTX-A5000
+                - NVIDIA-GeForce-RTX-3090
+                - NVIDIA-A10
+                - NVIDIA-L40
+                - NVIDIA-L40S
+                - NVIDIA-L4
+                - NVIDIA-GeForce-RTX-4090
+      volumes:
+      - name: pvc
+        persistentVolumeClaim:
+          claimName: transfer-learning-vol
