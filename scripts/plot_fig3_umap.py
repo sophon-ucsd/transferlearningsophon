@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data.embedding_dataset import _load_dir
 from src.data.subsampler import stratified_subsample
-from plots.style import set_publishable_style, save_fig, CLASS_COLORS, double_col
+from plots.style import set_publishable_style, save_fig, CLASS_COLORS
 
 LABEL_NAMES = ["QCD", "Hbb", "Hcc", "Hgg", "H4q", "Hqql",
                "Zqq", "Wqq", "Tbqq", "Tbl"]
@@ -61,29 +61,20 @@ def silhouette_overall(emb: np.ndarray, lab: np.ndarray, n: int = 10000,
 
 def panel(ax, coords: np.ndarray, lab: np.ndarray, title: str,
           xlim: tuple[float, float], ylim: tuple[float, float],
-          subtitle: str = ""):
+          subtitle: str = "", show_legend: bool = False):
+    handles = []
     for cls_idx in sorted(np.unique(lab)):
         m = (lab == cls_idx)
         name = LABEL_NAMES[cls_idx]
         color = CLASS_COLORS[name]
         ax.scatter(coords[m, 0], coords[m, 1], s=4, alpha=0.40,
-                   color=color, edgecolors="none", rasterized=True)
-
-    # Class centroids — larger filled markers labeled with class abbreviations
-    for cls_idx in sorted(np.unique(lab)):
-        m = (lab == cls_idx)
-        cx, cy = coords[m, 0].mean(), coords[m, 1].mean()
-        name = LABEL_NAMES[cls_idx]
-        ax.scatter([cx], [cy], s=120, color=CLASS_COLORS[name],
-                   edgecolor="black", linewidth=0.8, zorder=4)
-        ax.annotate(name, (cx, cy), xytext=(0, 9),
-                    textcoords="offset points",
-                    ha="center", va="bottom",
-                    fontsize=9, fontweight="bold",
-                    color="#222",
-                    bbox=dict(facecolor="white", edgecolor="none",
-                              alpha=0.85, pad=1.0),
-                    zorder=5)
+                   color=color, edgecolors="none", rasterized=True,
+                   label=name)
+        # Use a clean swatch-shaped handle for the legend (filled circle)
+        from matplotlib.lines import Line2D
+        handles.append(Line2D([0], [0], marker="o", color="none",
+                              markerfacecolor=color, markersize=8,
+                              markeredgecolor="none", label=name))
 
     ax.set_xlim(xlim); ax.set_ylim(ylim)
     ax.set_xticks([]); ax.set_yticks([])
@@ -95,6 +86,13 @@ def panel(ax, coords: np.ndarray, lab: np.ndarray, title: str,
                 ha="left", va="top", fontsize=10, color="#444",
                 bbox=dict(facecolor="white", edgecolor="#bbb",
                           alpha=0.9, boxstyle="round,pad=0.3"))
+
+    if show_legend:
+        ax.legend(handles=handles, loc="upper right",
+                  fontsize=9, frameon=True, framealpha=0.92,
+                  facecolor="white", edgecolor="#bbb",
+                  borderpad=0.5, labelspacing=0.3,
+                  handletextpad=0.4, ncol=1)
 
 
 def main():
@@ -111,6 +109,8 @@ def main():
     p.add_argument("--cluster-metrics-json",
                    default="/data/results/poster/arm3b_cluster_metrics.json",
                    help="If present, read silhouette numbers from here.")
+    p.add_argument("--ft-label", default="Full-FT 3M (seed 42)",
+                   help="Title for the right (fine-tuned) panel")
     args = p.parse_args()
 
     set_publishable_style()
@@ -167,8 +167,9 @@ def main():
                              gridspec_kw=dict(wspace=0.06))
     panel(axes[0], pre_coords, pre_lab, "Pretrained Sophon",
           xlim, ylim, subtitle=f"silhouette = {sil_pre:.3f}")
-    panel(axes[1], ft_coords,  ft_lab,  "Full-FT 3M (seed 42)",
-          xlim, ylim, subtitle=f"silhouette = {sil_ft:.3f}")
+    panel(axes[1], ft_coords,  ft_lab,  args.ft_label,
+          xlim, ylim, subtitle=f"silhouette = {sil_ft:.3f}",
+          show_legend=True)
 
     fig.subplots_adjust(left=0.04, right=0.99, top=0.92, bottom=0.07)
     save_fig(fig, args.output)
