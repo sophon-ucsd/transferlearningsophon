@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate publication-quality plots from experiment results.
+Generate plots from experiment results.
 
 Examples:
     python scripts/plot_results.py --plot-type arch_sweep --results-csv results/arch_sweep_results.csv
@@ -20,7 +20,7 @@ import matplotlib
 # Use non-interactive backend for cluster
 matplotlib.use("Agg")
 
-# Style settings for publication
+# Style settings
 plt.rcParams.update({
     "font.size": 12,
     "axes.titlesize": 14,
@@ -120,7 +120,7 @@ def plot_comparison(mlp_csv: Path, baseline_csv: Path, out_dir: Path):
     x = [0, 1]
     values = [baseline_acc, mlp_acc]
     colors = ["gray", "steelblue"]
-    labels = ["Baseline Sophon", "MLP Head"]
+    labels = ["Linear Probe", "MLP Head"]
     bars = ax.bar(x, values, color=colors, alpha=0.8)
     ax.set_xticks(x)
     ax.set_xticklabels(labels)

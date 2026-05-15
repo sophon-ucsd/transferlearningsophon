@@ -1,7 +1,9 @@
 import os
 import sys
 import csv
+import json
 import math
+import argparse
 import torch
 import uproot
 import numpy as np
@@ -15,56 +17,55 @@ if str(THIS_DIR) not in sys.path:
 
 from networks.example_ParticleTransformer_sophon import get_model
 
-TARGET_EVENTS_PER_CLASS = 100_000
 MAX_PART = 128
 STEP_SIZE = 5000
+BATCH_SIZE = 128  # number of jets to run through the model at once
 TREE_NAME = "tree"
-ROOT_DIR = "val_5M"
-OUTPUT_DIR = "embeddings"
-SKIP_IF_EXISTS = False
 
-JET_CLASSES = {
-    "HToBB": {
-        "files": ["HToBB_120.root", "HToBB_121.root", "HToBB_122.root", "HToBB_123.root", "HToBB_124.root"],
-        "output": "HToBB_inference_with_embedding.csv"
-    },
-    "HToCC": {
-        "files": ["HToCC_120.root", "HToCC_121.root", "HToCC_122.root", "HToCC_123.root", "HToCC_124.root"],
-        "output": "HToCC_inference_with_embedding.csv"
-    },
-    "HToGG": {
-        "files": ["HToGG_120.root", "HToGG_121.root", "HToGG_122.root", "HToGG_123.root", "HToGG_124.root"],
-        "output": "HToGG_inference_with_embedding.csv"
-    },
-    "HToWW4Q": {
-        "files": ["HToWW4Q_120.root", "HToWW4Q_121.root", "HToWW4Q_122.root", "HToWW4Q_123.root", "HToWW4Q_124.root"],
-        "output": "HToWW4Q_inference_with_embedding.csv"
-    },
-    "HToWW2Q1L": {
-        "files": ["HToWW2Q1L_120.root", "HToWW2Q1L_121.root", "HToWW2Q1L_122.root", "HToWW2Q1L_123.root", "HToWW2Q1L_124.root"],
-        "output": "HToWW2Q1L_inference_with_embedding.csv"
-    },
-    "ZToQQ": {
-        "files": ["ZToQQ_120.root", "ZToQQ_121.root", "ZToQQ_122.root", "ZToQQ_123.root", "ZToQQ_124.root"],
-        "output": "ZToQQ_inference_with_embedding.csv"
-    },
-    "WToQQ": {
-        "files": ["WToQQ_120.root", "WToQQ_121.root", "WToQQ_122.root", "WToQQ_123.root", "WToQQ_124.root"],
-        "output": "WToQQ_inference_with_embedding.csv"
-    },
-    "TTBar": {
-        "files": ["TTBar_120.root", "TTBar_121.root", "TTBar_122.root", "TTBar_123.root", "TTBar_124.root"],
-        "output": "TTBar_inference_with_embedding.csv"
-    },
-    "TTBarLep": {
-        "files": ["TTBarLep_120.root", "TTBarLep_121.root", "TTBarLep_122.root", "TTBarLep_123.root", "TTBarLep_124.root"],
-        "output": "TTBarLep_inference_with_embedding.csv"
-    },
-    "ZJetsToNuNu": {
-        "files": ["ZJetsToNuNu_120.root", "ZJetsToNuNu_121.root", "ZJetsToNuNu_122.root", "ZJetsToNuNu_123.root", "ZJetsToNuNu_124.root"],
-        "output": "ZToNuNu_inference_with_embedding.csv"
-    },
-}
+# The 17 derived Sophon input features (matches pretrained model's input_dim)
+SOPHON_FEATURE_NAMES = [
+    "part_pt_scale_log",
+    "part_e_scale_log",
+    "part_logptrel",
+    "part_logerel",
+    "part_deltaR",
+    "part_charge",
+    "part_isChargedHadron",
+    "part_isNeutralHadron",
+    "part_isPhoton",
+    "part_isElectron",
+    "part_isMuon",
+    "part_d0",
+    "part_d0err",
+    "part_dz",
+    "part_dzerr",
+    "part_deta",
+    "part_dphi",
+]
+NUM_SOPHON_FEATURES = len(SOPHON_FEATURE_NAMES)  # 17
+
+def discover_classes(root_dir):
+    """Auto-discover jet classes from .root files in the given directory."""
+    root_path = Path(root_dir)
+    if not root_path.is_dir():
+        sys.exit(f"Root directory not found: {root_dir}")
+
+    files_by_class = {}
+    for f in sorted(root_path.glob("*.root")):
+        parts = f.stem.rsplit("_", 1)
+        if len(parts) != 2 or not parts[1].isdigit():
+            print(f"Warning: skipping unrecognized file {f.name}")
+            continue
+        files_by_class.setdefault(parts[0], []).append(f.name)
+
+    for cls in files_by_class:
+        files_by_class[cls].sort(key=lambda x: int(x.rsplit("_", 1)[1].replace(".root", "")))
+
+    print(f"Discovered {len(files_by_class)} classes in {root_dir}:")
+    for cls, flist in sorted(files_by_class.items()):
+        print(f"  {cls}: {len(flist)} files")
+
+    return files_by_class
 
 particle_keys = [
     "part_px", "part_py", "part_pz", "part_energy",
@@ -78,8 +79,6 @@ scalar_keys_for_model = [
     "jet_pt", "jet_eta", "jet_phi",
     "jet_energy", "jet_nparticles", "jet_sdmass",
     "jet_tau1", "jet_tau2", "jet_tau3", "jet_tau4",
-    "aux_genpart_eta", "aux_genpart_phi", "aux_genpart_pid", "aux_genpart_pt",
-    "aux_truth_match",
 ]
 
 label_keys = [
@@ -88,65 +87,180 @@ label_keys = [
     "label_Tbqq", "label_Tbl",
 ]
 
-scalar_keys = label_keys + scalar_keys_for_model
-pf_keys = particle_keys + scalar_keys
+pf_keys = particle_keys + label_keys + scalar_keys_for_model
 
 label_names = ["QCD", "Hbb", "Hcc", "Hgg", "H4q", "Hqql", "Zqq", "Wqq", "Tbqq", "Tbl"]
 
 class DummyDataConfig:
-    input_dicts = {"pf_features": list(range(37))}
+    input_dicts = {"pf_features": list(range(NUM_SOPHON_FEATURES))}
     input_names = ["pf_points"]
-    input_shapes = {"pf_points": (MAX_PART, 37)}
+    input_shapes = {"pf_points": (MAX_PART, NUM_SOPHON_FEATURES)}
     label_names = ["label"]
     num_classes = 10
 
-data_config = DummyDataConfig()
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def _norm(x, subtract, multiply, clip_lo=-5.0, clip_hi=5.0):
+    """Apply (x - subtract) * multiply then clip to [clip_lo, clip_hi]."""
+    return np.clip((x - subtract) * multiply, clip_lo, clip_hi)
 
-print(f"Loading model on {device}...")
-model, _ = get_model(data_config, num_classes=data_config.num_classes, export_embed=True)
-model.eval().to(device)
-print("Model loaded")
 
-TRUTHLIKE_SCALARS = {
-    "aux_genpart_eta", "aux_genpart_phi", "aux_genpart_pid", "aux_genpart_pt", "aux_truth_match"
-}
+def compute_sophon_features(arrays, i, keep_idx=None):
+    """Derive the 17 Sophon input features from raw particle arrays.
 
-def build_pf_tensor(arrays, i):
+    Preprocessing matches the official JetClassII_full.yaml config exactly:
+      - momentum/energy logs are computed from jet_pt*500-scaled values
+      - 5 kinematic features are shift/scale normalised then clipped to [-5,5]
+      - d0 / dz use tanh transform;  d0err / dzerr are clipped to [0,1]
+
+    Returns an (n_part, 17) float32 array.
+    """
+    get = (lambda k: arrays[k][i][keep_idx]) if keep_idx is not None else (lambda k: arrays[k][i])
+
+    px = get("part_px")
+    py = get("part_py")
+    energy = get("part_energy")
+
+    jet_pt_val = float(arrays["jet_pt"][i])
+    jet_energy_val = float(arrays["jet_energy"][i])
+
+    eps = 1e-20
+    jet_pt_safe = max(jet_pt_val, eps)
+    jet_energy_safe = max(jet_energy_val, eps)
+
+    # Scaled kinematics (official: part_*_scale = part_* * 500 / jet_pt)
+    pt = np.sqrt(px ** 2 + py ** 2)
+    pt_scale = pt * 500.0 / jet_pt_safe
+    energy_scale = energy * 500.0 / jet_pt_safe
+
+    # Logarithmic features with normalization (subtract, multiply, clip)
+    pt_scale_log = _norm(np.log(np.clip(pt_scale, eps, None)),
+                         subtract=1.7, multiply=0.7)
+    e_scale_log  = _norm(np.log(np.clip(energy_scale, eps, None)),
+                         subtract=2.0, multiply=0.7)
+    logptrel     = _norm(np.log(np.clip(pt / jet_pt_safe, eps, None)),
+                         subtract=-4.7, multiply=0.7)
+    logerel      = _norm(np.log(np.clip(energy / jet_energy_safe, eps, None)),
+                         subtract=-4.7, multiply=0.7)
+
+    deta = get("part_deta")
+    dphi = get("part_dphi")
+    deltaR = _norm(np.sqrt(deta ** 2 + dphi ** 2),
+                   subtract=0.2, multiply=4.0)
+
+    # Impact parameters: tanh transform for d0/dz, clip [0,1] for errors
+    d0    = np.tanh(get("part_d0val"))
+    d0err = np.clip(get("part_d0err"), 0.0, 1.0)
+    dz    = np.tanh(get("part_dzval"))
+    dzerr = np.clip(get("part_dzerr"), 0.0, 1.0)
+
+    feats = np.stack([
+        pt_scale_log,
+        e_scale_log,
+        logptrel,
+        logerel,
+        deltaR,
+        get("part_charge"),
+        get("part_isChargedHadron"),
+        get("part_isNeutralHadron"),
+        get("part_isPhoton"),
+        get("part_isElectron"),
+        get("part_isMuon"),
+        d0,
+        d0err,
+        dz,
+        dzerr,
+        deta,
+        dphi,
+    ], axis=1).astype(np.float32)
+
+    return feats
+
+
+def build_pf_tensor(arrays, i, device):
+    """Build (points, features, lorentz_vectors, mask) for one jet."""
     n_part = arrays["part_px"][i].shape[0]
 
     if n_part > MAX_PART:
         px = arrays["part_px"][i]
         py = arrays["part_py"][i]
         pt = np.sqrt(px * px + py * py)
-        keep_idx = np.argsort(pt)[::-1][:MAX_PART]  # keep in descending pT order
+        keep_idx = np.argsort(pt)[::-1][:MAX_PART]
         n_part = MAX_PART
-        particle_feats = [arrays[k][i][keep_idx] for k in particle_keys]
     else:
-        particle_feats = [arrays[k][i] for k in particle_keys]
+        keep_idx = None
 
-    label_padding = [np.zeros(n_part, dtype=np.float32) for _ in range(len(label_keys))]
+    get = (lambda k: arrays[k][i][keep_idx]) if keep_idx is not None else (lambda k: arrays[k][i])
 
-    scalar_feats = []
-    for k in scalar_keys_for_model:
-        if k in TRUTHLIKE_SCALARS:
-            scalar_feats.append(np.zeros(n_part, dtype=np.float32))
+    # Scaled Lorentz 4-vectors: part_*_scale = part_* * 500 / jet_pt
+    jet_pt_val = float(arrays["jet_pt"][i])
+    jet_pt_safe = max(jet_pt_val, 1e-20)
+    lv = np.stack([
+        get("part_px") * 500.0 / jet_pt_safe,
+        get("part_py") * 500.0 / jet_pt_safe,
+        get("part_pz") * 500.0 / jet_pt_safe,
+        get("part_energy") * 500.0 / jet_pt_safe,
+    ], axis=1).astype(np.float32)
+
+    # 17 derived Sophon features — shape (n_part, 17)
+    sophon_feats = compute_sophon_features(arrays, i, keep_idx)
+
+    # Pad to MAX_PART
+    lv_padded = np.zeros((MAX_PART, 4), dtype=np.float32)
+    lv_padded[:n_part] = lv
+
+    feat_padded = np.zeros((MAX_PART, NUM_SOPHON_FEATURES), dtype=np.float32)
+    feat_padded[:n_part] = sophon_feats
+
+    # Tensors — model expects (batch, channels, particles)
+    lv_tensor = torch.tensor(lv_padded).unsqueeze(0).transpose(1, 2).to(device)
+    feat_tensor = torch.tensor(feat_padded).unsqueeze(0).transpose(1, 2).to(device)
+    mask = torch.tensor(lv_padded[:, 3] != 0, dtype=torch.bool).unsqueeze(0).unsqueeze(1).to(device)
+
+    return None, feat_tensor, lv_tensor, mask
+
+def build_pf_tensor_batch(arrays, indices, device):
+    """Build batched (features, lorentz_vectors, mask) for multiple jets at once."""
+    B = len(indices)
+    feat_batch = np.zeros((B, MAX_PART, NUM_SOPHON_FEATURES), dtype=np.float32)
+    lv_batch = np.zeros((B, MAX_PART, 4), dtype=np.float32)
+    mask_batch = np.zeros((B, MAX_PART), dtype=bool)
+
+    for b, i in enumerate(indices):
+        n_part = arrays["part_px"][i].shape[0]
+
+        if n_part > MAX_PART:
+            px = arrays["part_px"][i]
+            py = arrays["part_py"][i]
+            pt = np.sqrt(px * px + py * py)
+            keep_idx = np.argsort(pt)[::-1][:MAX_PART]
+            n_part = MAX_PART
         else:
-            scalar_feats.append(np.full(n_part, arrays[k][i], dtype=np.float32))
+            keep_idx = None
 
-    all_feats = particle_feats + label_padding + scalar_feats
-    pf_features = np.stack(all_feats, axis=1).astype(np.float32)
+        get = (lambda k, ki=keep_idx: arrays[k][i][ki]) if keep_idx is not None else (lambda k: arrays[k][i])
 
-    padded = np.zeros((MAX_PART, pf_features.shape[1]), dtype=np.float32)
-    padded[:n_part, :] = pf_features
+        jet_pt_val = float(arrays["jet_pt"][i])
+        jet_pt_safe = max(jet_pt_val, 1e-20)
 
-    jet_tensor = torch.tensor(padded, dtype=torch.float32).unsqueeze(0).to(device)
-    lorentz_vectors = jet_tensor[:, :, 0:4].transpose(1, 2)
-    features = jet_tensor[:, :, 4:].transpose(1, 2)
+        lv = np.stack([
+            get("part_px") * 500.0 / jet_pt_safe,
+            get("part_py") * 500.0 / jet_pt_safe,
+            get("part_pz") * 500.0 / jet_pt_safe,
+            get("part_energy") * 500.0 / jet_pt_safe,
+        ], axis=1).astype(np.float32)
 
-    mask = (jet_tensor[:, :, 3] != 0).unsqueeze(1)  # energy channel
-    points = None
-    return points, features, lorentz_vectors, mask
+        sophon_feats = compute_sophon_features(arrays, i, keep_idx)
+
+        lv_batch[b, :n_part] = lv
+        feat_batch[b, :n_part] = sophon_feats
+        mask_batch[b, :n_part] = True
+
+    # Model expects (batch, channels, particles)
+    feat_tensor = torch.from_numpy(feat_batch).permute(0, 2, 1).to(device)
+    lv_tensor = torch.from_numpy(lv_batch).permute(0, 2, 1).to(device)
+    mask_tensor = torch.from_numpy(mask_batch).unsqueeze(1).to(device)
+
+    return None, feat_tensor, lv_tensor, mask_tensor
+
 
 def get_truth_label(arrays, i):
     labs = np.array([arrays[k][i] for k in label_keys])
@@ -165,110 +279,294 @@ def jet_masses(arrays, i):
     m2 = max(E * E - (px * px + py * py + pz * pz), 0.0)
     return jet_sdmass, math.sqrt(m2), pt, eta, phi
 
-def process_class(class_name, class_info):
-    output_path = os.path.join(OUTPUT_DIR, class_info["output"])
+NPY_FLUSH_INTERVAL = 500_000  # flush embeddings to disk every 500K events
 
-    if SKIP_IF_EXISTS and os.path.exists(output_path) and os.path.getsize(output_path) > 100:
+
+def _flush_npy(emb_list, output_path, first_flush):
+    """Append embeddings to an NPY file on disk, clearing the in-memory list."""
+    if not emb_list:
+        return
+    chunk = np.stack(emb_list)
+    if first_flush or not os.path.exists(output_path):
+        np.save(output_path, chunk)
+    else:
+        existing = np.load(output_path)
+        np.save(output_path, np.concatenate([existing, chunk], axis=0))
+    emb_list.clear()
+
+
+def process_class(class_name, root_files, root_dir, output_dir, target_events,
+                   model, device, num_classes=10, skip_existing=False, fmt="csv"):
+    if fmt == "npy":
+        output_path = os.path.join(output_dir, f"{class_name}_embeddings.npy")
+    else:
+        output_path = os.path.join(output_dir, f"{class_name}_inference_with_embedding.csv")
+
+    if skip_existing and os.path.exists(output_path) and os.path.getsize(output_path) > 100:
         print(f"Skipping {class_name} (exists): {output_path}")
-        return 0
+        return 0, np.array([]), np.array([]), np.array([])
 
     print(f"\nProcessing {class_name}")
 
-    root_files = class_info["files"]
     total_written = 0
-    wrote_header = False
-    target = TARGET_EVENTS_PER_CLASS
+    target = target_events if target_events > 0 else None
+    emb_list = [] if fmt == "npy" else None
+    first_flush = True
 
-    with open(output_path, "w", newline="") as csvfile:
-        writer = csv.writer(csvfile)
-        paths = [f"{os.path.join(ROOT_DIR, fn)}:{TREE_NAME}" for fn in root_files]
+    # Accumulate raw Sophon predictions for baseline evaluation
+    all_preds = []   # argmax of logits
+    all_truths = []  # truth label index
+    all_probs = []   # softmax probabilities (for AUC)
+
+    csvfile = open(output_path, "w", newline="") if fmt == "csv" else None
+    writer = csv.writer(csvfile) if csvfile else None
+    wrote_header = False
+
+    try:
+        paths = [f"{os.path.join(root_dir, fn)}:{TREE_NAME}" for fn in root_files]
 
         it = uproot.iterate(
             paths,
             expressions=pf_keys,
-            entry_step=STEP_SIZE,
+            step_size=STEP_SIZE,
             library="np",
             report=True,
         )
 
         for batch_idx, (arrays, report) in enumerate(it):
             batch_len = len(arrays["jet_pt"])
-
             source_file = os.path.basename(getattr(report, "file_path", "unknown"))
             batch_start_entry = getattr(report, "entry_start", 0)
 
-            pbar = tqdm(range(batch_len), desc=f"{class_name} batch {batch_idx}", leave=False)
-
-            for i in pbar:
+            # Process in GPU batches
+            for chunk_start in tqdm(range(0, batch_len, BATCH_SIZE),
+                                    desc=f"{class_name} batch {batch_idx}",
+                                    leave=False):
+                chunk_end = min(chunk_start + BATCH_SIZE, batch_len)
                 if target is not None and total_written >= target:
                     break
 
+                indices = list(range(chunk_start, chunk_end))
+                # Trim if we'd exceed target
+                if target is not None and total_written + len(indices) > target:
+                    indices = indices[:target - total_written]
+
                 try:
-                    points, features, lorentz_vectors, mask = build_pf_tensor(arrays, i)
+                    points, features, lorentz_vectors, mask = build_pf_tensor_batch(arrays, indices, device)
 
                     with torch.no_grad():
                         out = model(points, features, lorentz_vectors, mask)
 
                     if isinstance(out, tuple):
-                        logits, embedding = out
-                        logits_np = logits.squeeze(0).detach().cpu().numpy()
+                        logits_batch, embedding_batch = out
+                        logits_np = logits_batch.detach().cpu().numpy()
                     else:
-                        embedding = out
-                        logits_np = np.zeros(10, dtype=np.float32)  # fallback
+                        embedding_batch = out
+                        logits_np = np.zeros((len(indices), num_classes), dtype=np.float32)
 
-                    emb = embedding.squeeze(0).detach().cpu().numpy()
-
-                    if not wrote_header:
-                        base = [
-                            "source_file", "entry_index", "row_index",
-                            "truth_label", "label_name",
-                            "jet_sdmass", "jet_mass", "jet_pt", "jet_eta", "jet_phi",
-                        ]
-                        logit_cols = [f"logit_{j}" for j in range(10)]
-                        emb_cols = [f"emb_{j}" for j in range(emb.shape[-1])]
-                        writer.writerow(base + logit_cols + emb_cols)
-                        wrote_header = True
-
-                    truth_label, label_name = get_truth_label(arrays, i)
-                    jet_sdmass, jet_mass, pt, eta, phi = jet_masses(arrays, i)
-                    entry_index = int(batch_start_entry + i)
-
-                    row = [
-                        source_file, entry_index, total_written,
-                        truth_label, label_name,
-                        jet_sdmass, jet_mass, pt, eta, phi,
-                        *logits_np.astype(np.float32).tolist(),
-                        *emb.astype(np.float32).tolist(),
-                    ]
-                    writer.writerow(row)
-                    total_written += 1
+                    emb_np = embedding_batch.detach().cpu().numpy()
 
                 except Exception as e:
-                    pbar.set_postfix_str(f"err: {e}")
+                    if total_written == 0:
+                        raise RuntimeError(f"First batch failed — aborting: {e}") from e
+                    print(f"  {class_name}: skipping chunk at {chunk_start} — {e}")
                     continue
+
+                # Process results for this chunk
+                for j, i in enumerate(indices):
+                    truth_label, label_name = get_truth_label(arrays, i)
+                    pred_label = int(np.argmax(logits_np[j]))
+                    all_preds.append(pred_label)
+                    all_truths.append(truth_label)
+                    exp_l = np.exp(logits_np[j] - logits_np[j].max())
+                    all_probs.append((exp_l / exp_l.sum()).astype(np.float16))
+
+                    if fmt == "npy":
+                        emb_list.append(emb_np[j].astype(np.float16))
+                    else:
+                        if not wrote_header:
+                            base = [
+                                "source_file", "entry_index", "row_index",
+                                "truth_label", "label_name",
+                                "jet_sdmass", "jet_mass", "jet_pt", "jet_eta", "jet_phi",
+                            ]
+                            logit_cols = [f"logit_{k}" for k in range(logits_np.shape[1])]
+                            emb_cols = [f"emb_{k}" for k in range(emb_np.shape[1])]
+                            writer.writerow(base + logit_cols + emb_cols)
+                            wrote_header = True
+
+                        jet_sdmass, jet_mass, pt, eta, phi = jet_masses(arrays, i)
+                        entry_index = int(batch_start_entry + i)
+                        row = [
+                            source_file, entry_index, total_written,
+                            truth_label, label_name,
+                            jet_sdmass, jet_mass, pt, eta, phi,
+                            *logits_np[j].astype(np.float32).tolist(),
+                            *emb_np[j].astype(np.float32).tolist(),
+                        ]
+                        writer.writerow(row)
+
+                    total_written += 1
+
+                # Flush embeddings periodically
+                if fmt == "npy" and emb_list and len(emb_list) >= NPY_FLUSH_INTERVAL:
+                    _flush_npy(emb_list, output_path, first_flush)
+                    first_flush = False
+                    print(f"  {class_name}: flushed {total_written:,} embeddings to disk")
 
             if target is not None and total_written >= target:
                 break
 
+    finally:
+        if csvfile:
+            csvfile.close()
+
+    # Flush any remaining embeddings
+    if fmt == "npy" and emb_list:
+        _flush_npy(emb_list, output_path, first_flush)
+
     print(f"{class_name}: saved {total_written:,} rows -> {output_path}")
-    return total_written
+    return total_written, np.array(all_preds), np.array(all_truths), np.array(all_probs)
+
+
 
 def main():
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    parser = argparse.ArgumentParser(description="JetClass Sophon inference & embedding extraction")
+    parser.add_argument("--checkpoint", type=str, default=None,
+                        help="Path to pretrained model.pt weights file. "
+                             "If omitted, runs with random-init weights (baseline).")
+    parser.add_argument("--root-dir", type=str, default="data/val_5M",
+                        help="Directory containing .root files (auto-discovers classes)")
+    parser.add_argument("--events-per-class", type=int, default=100_000,
+                        help="Target events per class (0 = all available)")
+    parser.add_argument("--output-dir", type=str, default="embeddings",
+                        help="Directory for output CSV files")
+    parser.add_argument("--skip-existing", action="store_true",
+                        help="Skip classes whose output CSV already exists")
+    parser.add_argument("--format", type=str, default="csv", choices=["csv", "npy"],
+                        help="Output format: csv (full, ~1.8KB/event) or npy (embeddings only, ~256B/event)")
+    args = parser.parse_args()
 
+    # --- Discover classes from root dir ---
+    classes = discover_classes(args.root_dir)
+    if not classes:
+        sys.exit(f"No .root files found in {args.root_dir}")
+
+    data_config = DummyDataConfig()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # --- Load checkpoint (if any) and detect num_classes ---
+    num_classes = 10  # default for random-init
+    checkpoint_state = None
+
+    if args.checkpoint:
+        ckpt_path = Path(args.checkpoint)
+        if not ckpt_path.exists():
+            sys.exit(f"Checkpoint not found: {ckpt_path}")
+        raw = torch.load(str(ckpt_path), map_location=device)
+        checkpoint_state = raw["model_state_dict"] if "model_state_dict" in raw else raw
+        # Detect num_classes from FC layer weight shape
+        for key in ["mod.fc.0.weight", "fc.0.weight"]:
+            if key in checkpoint_state:
+                num_classes = checkpoint_state[key].shape[0]
+                print(f"Detected num_classes={num_classes} from checkpoint")
+                break
+
+    # --- Create model with correct num_classes ---
+    print(f"Loading model on {device} (num_classes={num_classes})...")
+    model, _ = get_model(data_config, num_classes=num_classes, export_embed=True)
+
+    if checkpoint_state is not None:
+        # Try loading; if keys lack 'mod.' prefix, remap them
+        missing, unexpected = model.load_state_dict(checkpoint_state, strict=False)
+        if len(unexpected) > 0 and all(not k.startswith("mod.") for k in checkpoint_state):
+            remapped = {"mod." + k: v for k, v in checkpoint_state.items()}
+            missing, unexpected = model.load_state_dict(remapped, strict=False)
+            print(f"Remapped checkpoint keys (added 'mod.' prefix)")
+        loaded = len(checkpoint_state) - len(unexpected)
+        print(f"Loaded pretrained weights from {ckpt_path} "
+              f"({loaded} params loaded, {len(missing)} missing, {len(unexpected)} unexpected)")
+    else:
+        print("No --checkpoint provided; using random-init weights")
+
+    model.eval().to(device)
+    print("Model ready")
+
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    epc_str = str(args.events_per_class) if args.events_per_class > 0 else "ALL"
     print("JetClass embedding generator")
-    print(f"classes: {len(JET_CLASSES)}")
-    print(f"events per class: {TARGET_EVENTS_PER_CLASS if TARGET_EVENTS_PER_CLASS else 'ALL'}")
-    print(f"root dir: {ROOT_DIR}")
-    print(f"out dir: {OUTPUT_DIR}")
-    print(f"skip existing: {SKIP_IF_EXISTS}")
+    print(f"classes: {len(classes)}")
+    print(f"events per class: {epc_str}")
+    print(f"root dir: {args.root_dir}")
+    print(f"out dir: {args.output_dir}")
+    print(f"skip existing: {args.skip_existing}")
+    print(f"format: {args.format}")
 
     total_events = 0
-    for class_name, class_info in JET_CLASSES.items():
-        total_events += process_class(class_name, class_info)
+    all_preds = []
+    all_truths = []
+    all_probs = []
 
-    print(f"Done. Total events written: {total_events:,}")
-    print(f"Outputs in: {OUTPUT_DIR}/")
+    for class_name, file_list in sorted(classes.items()):
+        n_written, preds, truths, probs = process_class(
+            class_name, file_list, args.root_dir, args.output_dir,
+            args.events_per_class, model, device, num_classes,
+            skip_existing=args.skip_existing, fmt=args.format,
+        )
+        total_events += n_written
+        if len(preds) > 0:
+            all_preds.append(preds)
+            all_truths.append(truths)
+            all_probs.append(probs)
+
+    print(f"\nDone. Total events written: {total_events:,}")
+    print(f"Outputs in: {args.output_dir}/")
+
+    # --- Raw Sophon baseline evaluation ---
+    if len(all_preds) > 0:
+        preds = np.concatenate(all_preds)
+        truths = np.concatenate(all_truths)
+        probs = np.concatenate(all_probs).astype(np.float32)
+
+        acc = float(np.mean(preds == truths))
+        print(f"\n{'='*50}")
+        print(f"RAW SOPHON BASELINE (zero-shot transfer)")
+        print(f"{'='*50}")
+        print(f"  Total events evaluated: {len(truths):,}")
+        print(f"  Overall accuracy: {acc:.4f}")
+
+        # Per-class accuracy
+        unique_labels = sorted(set(truths))
+        per_class = {}
+        for lab in unique_labels:
+            mask = truths == lab
+            cls_acc = float(np.mean(preds[mask] == truths[mask]))
+            cls_name = label_names[lab] if lab < len(label_names) else f"class_{lab}"
+            per_class[cls_name] = {"accuracy": cls_acc, "count": int(mask.sum())}
+            print(f"  {cls_name}: acc={cls_acc:.4f} (n={mask.sum():,})")
+
+        # Macro AUC (one-vs-rest)
+        try:
+            from sklearn.metrics import roc_auc_score
+            auc = roc_auc_score(truths, probs, multi_class="ovr", average="macro")
+            print(f"  Macro AUC (OvR): {auc:.4f}")
+        except Exception as e:
+            auc = None
+            print(f"  AUC computation failed: {e}")
+
+        # Save baseline metrics
+        baseline_results = {
+            "model": "raw_sophon_pretrained",
+            "total_events": len(truths),
+            "accuracy": acc,
+            "auc_macro_ovr": auc,
+            "per_class": per_class,
+        }
+        metrics_path = os.path.join(args.output_dir, "raw_sophon_baseline.json")
+        with open(metrics_path, "w") as f:
+            json.dump(baseline_results, f, indent=2)
+        print(f"\n  Baseline metrics saved to {metrics_path}")
 
 if __name__ == "__main__":
     main()

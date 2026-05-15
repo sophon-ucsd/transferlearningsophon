@@ -1,0 +1,84 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: full-ft-sweep-raunav
+  namespace: cms-ml
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: train
+        image: gitlab-registry.nrp-nautilus.io/escheuller/transfer-learning:cu121
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -e
+          git clone https://github.com/raunavm/transferlearningsophon.git
+          cd transferlearningsophon
+          pip install hydra-core omegaconf torchmetrics pytorch-lightning
+
+          mkdir -p models/JetClassII_Sophon
+          curl -fSL -o models/JetClassII_Sophon/model.pt \
+            "https://huggingface.co/jet-universe/sophon/resolve/main/models/JetClassII_Sophon/model.pt"
+
+          mkdir -p /data/results/full_ft
+
+          for SIZE in 10000 30000 100000 300000 1000000 3000000 10000000 30000000 100000000; do
+            for SEED in 42 123 456; do
+              echo "=== full_ft SIZE=$SIZE SEED=$SEED ==="
+              PYTHONUNBUFFERED=1 python3 scripts/train_sophon.py \
+                transfer.strategy=full_ft \
+                transfer.checkpoint=models/JetClassII_Sophon/model.pt \
+                transfer.backbone_lr=1e-4 \
+                data.train_dir=/data/JetClass/Pythia/train_100M \
+                data.val_dir=/data/JetClass/Pythia/val_5M \
+                data.test_dir=/data/JetClass/Pythia/test_20M \
+                data.train_size=$SIZE \
+                data.val_size=500000 \
+                data.test_size=500000 \
+                data.batch_size=256 \
+                data.num_workers=4 \
+                training.optimizer.lr=1e-3 \
+                training.max_epochs=100 \
+                training.early_stopping_patience=10 \
+                project.seed=$SEED \
+                sweep_name=full_ft \
+                logging.wandb_project=null \
+                logging.results_dir=/data/results \
+                2>&1 | tail -5
+
+            done
+          done
+          echo "ALL DONE"
+        resources:
+          requests:
+            memory: "32Gi"
+            cpu: "4"
+            nvidia.com/gpu: "1"
+          limits:
+            memory: "32Gi"
+            cpu: "4"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: pvc
+          mountPath: /data
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.product
+                operator: In
+                values:
+                - NVIDIA-A100-SXM4-80GB
+                - NVIDIA-A100-PCIE-40GB
+                - NVIDIA-A40
+                - NVIDIA-RTX-A6000
+                - NVIDIA-RTX-A5000
+                - NVIDIA-TITAN-RTX
+      volumes:
+      - name: pvc
+        persistentVolumeClaim:
+          claimName: transfer-learning-vol

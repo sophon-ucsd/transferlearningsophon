@@ -1,110 +1,206 @@
 # transferlearningsophon
 
-## Transfer Learning Project
+## Transfer Learning with Sophon for Jet Classification
 
-This README page aims to be an introduction for the ongoing transfer learning project with applications to particle physics. The project in it of itself is aimed at advancing and observing the machine learning applications to the world of particle physics, and specifically, to the task of jet-tagging. As described in the original repository for Sophon, _"...the model Sophon (Sophon (Signature-Oriented Pre-training for Heavy-resonance ObservatioN) is a method proposed for developing foundation AI models tailored for future usage in LHC experimental analyses..." _ More specifically, the Sophon is a deep learning framework developed with the goal of better classifiying jets—AKA, collimated sprays of particles produced in high-energy collisions at places like the LHC (Large Hadron Collider)—using both particle-level and jet-level features.
+This project explores representation learning in jet physics using Sophon, a pretrained ParticleTransformer foundation model. We extract frozen 128-D embeddings from Sophon and train lightweight classifiers (MLP heads and linear probes) on them to evaluate transfer quality across all 10 JetClass-I jet types.
 
-The bigger and more universal goal, however, is to explore representation learning in jet physics, focusing on how neuralnetowrk embeddings capture physical information across different datasets and simulation domains. By doing all of this, we are aiming for the following, overarching goal: Evaluate transfer learning potential across deep learning models and jet types (Sophon vs. ParT & Higgs, top, QCD, etc.)
-
-This README file focuses on one core task: running inference with Sophon on a subset of the JetClass dataset (which can be accessed through https://zenodo.org/records/6619768 -> "JetClass_Pythia_val_5M.tar" -> Download & Extract) and extracting embeddings for visualization and classification. It is written to simplify and better explain the whole process.
-
-### Steps to follow:
-1. Set up a new Python venv for the project
-2. Download and unzip the data from the .tar file and save to an accessible folder for the project (https://zenodo.org/records/6619768/files/JetClass_Pythia_val_5M.tar?download=1)
-3. Create a new .py file in the /sophon folder to run the model (model located in: example_ParticleTransforme_sophon.py file).
-4. Run the inference script (reads ROOT files + writes a CSV file with the embeddings)
-5. Explore embeddings (simple plotting)
+The pipeline:
+1. Run Sophon inference on JetClass ROOT files to extract embeddings (+ raw Sophon zero-shot baseline)
+2. Train MLP classifiers on frozen embeddings, sweeping over architecture and dataset size
+3. Compare against the raw Sophon baseline
 
 ## Requirements
-- Python 3.10+
-- PyTorch
-- uproot, numpy, tqdm, awkward
 
-## Install for the new venv:
+- Python 3.10+
+- PyTorch (with CUDA for GPU inference)
+- weaver-core >= 0.4.0
+- uproot, awkward, numpy, tqdm, scikit-learn, pandas, matplotlib
+
+## Install
+
 ```sh
-from repo_root/
 conda create -n sophon python=3.10 -y
 conda activate sophon
 # Install PyTorch (pick the right command for your CUDA)
-# See https://pytorch.org/get-started/locally/ for your platform; example (CPU):
-pip install torch --index-url https://download.pytorch.org/whl/cpu
-# Core deps
-pip install uproot numpy tqdm
+# See https://pytorch.org/get-started/locally/ for your platform
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+pip install -r requirements.txt
 ```
 
 ## Data
-Once you have downlaoded the subset of the JetClass dataset, place the .root files in data/JetClass/val_5M. The example config file as well as the inference scrip, expect around 5 of the validation files to successfully run inference on them: 
-'''
-HToBB_120.root, HToBB_121.root,...,HToBB_124.root
 
-## Inference script
+The full training set (`train_100M`) is available on the Nautilus PVC at `/data/JetClass/Pythia/train_100M/`. It contains 100 ROOT files per class (~10M events/class, 100M total).
 
-Access the inference_jetclass.py file in this repository and download. The inference script:
-1. Reads particle-flow and scalar features from each event in the .root files
-2. Pads up to the 128 mparticles and skips events/logits events
-3. Calls the function getm_model from example_ParticleTransformer_sophon.py
-4. Writes CSV files with: file name, event index, truth label, some of the main kinematic features, and a 128-D vector embedding
-5. From a local terminal, run:
+For local development, download the smaller validation set (~5M events) from https://zenodo.org/records/6619768:
+
 ```sh
-python inference_with_embedding.py
+mkdir -p data
+cd data
+wget "https://zenodo.org/records/6619768/files/JetClass_Pythia_val_5M.tar?download=1" -O JetClass_Pythia_val_5M.tar
+tar -xf JetClass_Pythia_val_5M.tar
+cd ..
 ```
-_It will take a couple minutes per root file_
 
-### Steps to follow in order to successfully run data through Sophon
+The 10 JetClass-I classes: `HToBB`, `HToCC`, `HToGG`, `HToWW2Q1L`, `HToWW4Q`, `TTBar`, `TTBarLep`, `WToQQ`, `ZToQQ`, `ZJetsToNuNu`.
 
-The steps that are required to be followed in order to run a comparison between QCD (in this case, background noise) and any of the other jet classes available in the val_5M dataset through Sophon are as follows:
-1. Select which jet class to compare to QCD.
-- For example, let's take the HToCC files.
-One will notice that in the val_5M dataset, there are a total of five files related to the HToCC class; all labeled as "HToCC_120.root", "HToCC_121.root",...,"HToCC_124.root". When feeding these to Sophon — or any other jet class, really — we must include all five files in our code as such:
-```sh
-root_files = ["HToCC_120.root", "HToCC_121.root","HToCC_122.root","HToCC_123.root","HToCC_124.root"]
-```
-2. Make sure you pf_keys is the correct dimension.
-- If the model receives any other dimensions when it comes to what we are feeding it, it will not run.
-Make sure pf_keys is composed of particle_keys + scalar_keys in order to run the data through the model successfully. Consequently, particle_keys and scalar_keys must each contain all labels that are in the inference script above. They must look like this:
-```sh
-particle_keys = [
-    'part_px', 'part_py', 'part_pz', 'part_energy',
-    'part_deta', 'part_dphi', 'part_d0val', 'part_d0err',
-    'part_dzval', 'part_dzerr', 'part_charge',
-    'part_isChargedHadron', 'part_isNeutralHadron',
-    'part_isPhoton', 'part_isElectron', 'part_isMuon'
-]
-scalar_keys = [
-    'label_QCD', 'label_Hbb', 'label_Hcc', 'label_Hgg',
-    'label_H4q', 'label_Hqql', 'label_Zqq', 'label_Wqq',
-    'label_Tbqq', 'label_Tbl', 'jet_pt', 'jet_eta', 'jet_phi',
-    'jet_energy', 'jet_nparticles', 'jet_sdmass', 'jet_tau1',
-    'jet_tau2', 'jet_tau3', 'jet_tau4', 'aux_genpart_eta',
-    'aux_genpart_phi', 'aux_genpart_pid', 'aux_genpart_pt',
-    'aux_truth_match'
-]
-```
-3. If you want a record of the inference, make sure to save it to a csv file.
-- In order to successfully save the data being run through Sophon, the cleanest and most accessible way to do it is to save the inference output into a csv file under an appropriate name (e.g.: inference_sophon.csv)
-To do this, we must first "import csv" at the very top of our inference script.
--Then, before running the inference loop we create a new variable under an appropriate name as such:
-```sh
-OUTPUT_CSV = "inference_sophon.csv"
-```
--For this to actually create and write into the CSV file, we must open the file using python's csv.writer before the event loop, and define the header row we want. For example:
-```sh
-with open(OUTPUT_CSV, mode="w", newline="") as csvfile:
-    writer = csv.writer(csvfile)
+**Note:** `data/`, `embeddings*/`, `results/`, and model weights (`*.pt`) are all in `.gitignore`.
 
-    # write header (following format is what we have been using and what works best so far)
-    header = ["file", "event_index", "truth_label", "label_name"] + \
-             [f"emb_{j}" for j in range(128)]
-    writer.writerow(header)
+## Pretrained Weights
 
-    # now begin your inference loop 
-    for i in range(total_events):
-        # compute embedding, truth label, etc.
-        row = [file_name, i, truth_label, label_name] + list(embedding)
-        writer.writerow(row)
+Download the Sophon pretrained checkpoint from HuggingFace:
+
+```sh
+mkdir -p models/JetClassII_Sophon
+curl -fSL -o models/JetClassII_Sophon/model.pt \
+  "https://huggingface.co/jet-universe/sophon/resolve/main/models/JetClassII_Sophon/model.pt"
 ```
-In summary, the main points are:
-1. Open the file using with open(...) before the loop.
-2. Create the writer object.
-3. Write in the header.
-4. Write exactly one CSV row per event inside the inference loop.
+
+## Pipeline
+
+### Step 1: Extract Embeddings
+
+`inference_all_classes.py` reads ROOT files, computes the 17 derived Sophon input features, runs each jet through the model, and saves 128-D embeddings. It also evaluates the raw Sophon baseline (zero-shot accuracy and AUC from the model's own logit outputs).
+
+```sh
+# Pretrained Sophon — full dataset, NPY format
+python3 inference_all_classes.py \
+  --checkpoint models/JetClassII_Sophon/model.pt \
+  --root-dir data/train_100M \
+  --events-per-class 0 \
+  --output-dir embeddings_pretrained_full \
+  --format npy
+
+# Local dev — small run, CSV format (default)
+python3 inference_all_classes.py \
+  --checkpoint models/JetClassII_Sophon/model.pt \
+  --root-dir data/val_5M \
+  --events-per-class 1000 \
+  --output-dir embeddings_test
+```
+
+Key flags:
+- `--events-per-class 0` extracts all available events (use a number to cap per class)
+- `--format npy` saves as float16 NPY (memory-mapped loading, ~10x smaller than CSV)
+- `--skip-existing` skips classes that already have output files
+
+Output: one file per class (`{ClassName}_embeddings.npy` or `{ClassName}_inference_with_embedding.csv`) plus `raw_sophon_baseline.json` with zero-shot metrics.
+
+### Step 2: Train MLP Classifiers
+
+`scripts/train_mlp.py` trains an MLP head on frozen embeddings with configurable architecture, early stopping, and automatic output of loss curves, ROC plots, training history, and model weights.
+
+```sh
+python3 scripts/train_mlp.py \
+  --emb-dir embeddings_pretrained_full/ \
+  --out-dir results/mlp_medium/ \
+  --hidden-layers 256,128,64 \
+  --epochs 50 \
+  --batch-size 8192 \
+  --patience 10
+```
+
+Key flags:
+- `--hidden-layers` comma-separated layer sizes (e.g., `64` for tiny, `1024,512,256,128` for xlarge)
+- `--patience N` enables early stopping (stops if val loss doesn't improve for N epochs, 0 = disabled)
+- `--per-class-cap N` limits samples per class
+
+Output per run:
+- `train_results.csv` — test accuracy, AUC, per-class AUCs, timing, parameter count
+- `training_history.csv` — per-epoch metrics
+- `loss_curves.png` — train/val loss + val accuracy/AUC plots
+- `roc_mlp_*.png` — per-class ROC curves
+- `mlp_*.pt` — saved model weights + scaler + metadata
+
+### Step 3: Run Sweeps
+
+`scripts/run_sweep.py` orchestrates multiple training runs.
+
+**Architecture sweep** — 7 MLP architectures at fixed 1M events/class:
+```sh
+python3 scripts/run_sweep.py --sweep arch \
+  --emb-dir embeddings_pretrained_full/ \
+  --out-dir results/arch_sweep/ \
+  --per-class-cap 1000000 \
+  --epochs 50 \
+  --batch-size 8192
+```
+
+Architectures: tiny `[64]`, small `[128,64]`, medium `[256,128,64]`, large `[512,256,128,64]`, xlarge `[1024,512,256,128]`, xxlarge `[1024,512,256,128,64]`, wide `[2048,1024,512]`.
+
+**Dataset size sweep** — medium MLP at 5 dataset sizes with early stopping:
+```sh
+python3 scripts/run_sweep.py --sweep size \
+  --emb-dir embeddings_pretrained_full/ \
+  --out-dir results/size_sweep/ \
+  --hidden-layers 256,128,64 \
+  --epochs 50 \
+  --batch-size 8192 \
+  --patience 10
+```
+
+Sizes per class: 10K, 100K, 1M, 10M (100K to 100M total events).
+
+## Running on Nautilus (Kubernetes)
+
+The pipeline is split into 3 jobs for parallel execution by multiple team members. All jobs run in the `cms-ml` namespace using the `transfer-learning-vol` PVC.
+
+**Before submitting:** replace `YOUR_INITIALS` in each job YAML with your initials.
+
+### Job 1: Inference (everyone runs this)
+
+Extracts all 100M embeddings from `train_100M` as NPY and computes the raw Sophon baseline.
+
+```sh
+kubectl apply -f k8s/job-1-inference.yaml
+kubectl logs -f job/sophon-inference-YOUR_INITIALS -n cms-ml
+```
+
+Estimated time: ~11 hours. Output: `/data/embeddings_pretrained_full/`
+
+### Job 2: Architecture Sweep (1 person, after Job 1)
+
+Trains 7 MLP architectures at 1M events/class.
+
+```sh
+kubectl apply -f k8s/job-2-arch-sweep.yaml
+kubectl logs -f job/sophon-arch-sweep-YOUR_INITIALS -n cms-ml
+```
+
+Estimated time: ~1-2 hours. Output: `/data/results/arch_sweep/`
+
+### Job 3: Dataset Size Sweep (1 person, after Job 1)
+
+Trains medium MLP `[256,128,64]` at 5 dataset sizes with early stopping (patience=10).
+
+```sh
+kubectl apply -f k8s/job-3-size-sweep.yaml
+kubectl logs -f job/sophon-size-sweep-YOUR_INITIALS -n cms-ml
+```
+
+Estimated time: ~2-4 hours. Output: `/data/results/size_sweep/`
+
+## Project Structure
+
+```
+inference_all_classes.py    # Sophon inference + embedding extraction + raw baseline
+scripts/
+  train_mlp.py              # MLP training with early stopping, loss curves, weight saving
+  run_sweep.py              # Orchestrates arch and size sweeps
+  plot_results.py           # Plotting utilities
+configs/
+  arch_sweep.yaml           # Architecture sweep configuration
+  size_sweep.yaml           # Dataset size sweep configuration
+k8s/
+  job-1-inference.yaml      # K8s job: inference (all team members)
+  job-2-arch-sweep.yaml     # K8s job: architecture sweep
+  job-3-size-sweep.yaml     # K8s job: dataset size sweep
+networks/
+  example_ParticleTransformer_sophon.py  # Sophon model definition
+```
+
+## References
+
+- [Sophon](https://github.com/jet-universe/sophon) — Pretrained ParticleTransformer for jet physics
+- [JetClass dataset](https://zenodo.org/records/6619768) — Jet classification benchmark
+- [weaver-core](https://github.com/hqucms/weaver-core) — ML framework for HEP
+- [Sophon pretrained weights](https://huggingface.co/jet-universe/sophon) — HuggingFace model hub

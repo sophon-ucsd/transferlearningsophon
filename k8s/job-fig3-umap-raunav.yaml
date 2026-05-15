@@ -1,0 +1,42 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fig3-umap-raunav
+  namespace: cms-ml
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: fig3-umap
+        image: gitlab-registry.nrp-nautilus.io/escheuller/transfer-learning:cu121
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -e
+          git clone https://github.com/raunavm/transferlearningsophon.git
+          cd transferlearningsophon
+          pip install umap-learn scikit-learn matplotlib
+
+          PYTHONUNBUFFERED=1 python3 scripts/plot_fig3_umap.py \
+            --pretrained-dir /data/embeddings_test_20M \
+            --finetuned-dir  /data/embeddings_ft_full_3M_seed42_test100k \
+            --n-per-class 3000 \
+            --seed 42 \
+            --cache /data/results/poster/umap_coords_cache.npz \
+            --output /data/results/poster/arm3a_umap
+        resources:
+          requests:
+            memory: "32Gi"
+            cpu: "4"
+          limits:
+            memory: "32Gi"
+            cpu: "8"
+        volumeMounts:
+        - name: pvc
+          mountPath: /data
+      volumes:
+      - name: pvc
+        persistentVolumeClaim:
+          claimName: transfer-learning-vol

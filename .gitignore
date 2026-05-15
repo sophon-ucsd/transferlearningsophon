@@ -1,7 +1,8 @@
 # Data files - too large for GitHub
+/data/
+!src/data/
 val_5M/
 embeddings/
-networks/
 *.root
 
 # Python
@@ -46,8 +47,22 @@ env/
 .DS_Store
 Thumbs.db
 
-# Model artifacts (ignore results and large model files)
-results/
+# Model artifacts (ignore heavy results, allow figures+JSONs+small CSVs+md)
+results/**
+!results/arm1/
+!results/arm2/
+!results/arm3/
+!results/arm4/
+!results/main_plots/
+!results/arm1/**
+!results/arm2/**
+!results/arm3/**
+!results/arm4/**
+!results/main_plots/**
+results/arm*/observables_*.parquet
+results/arm*/observables_*.npz
+results/arm*/*.pt
+results/arm*/*.h5
 *.pt
 *.pth
 *.ckpt

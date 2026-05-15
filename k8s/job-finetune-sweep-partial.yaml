@@ -1,0 +1,76 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: finetune-partial-raunav
+  namespace: cms-ml
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: train
+        image: gitlab-registry.nrp-nautilus.io/escheuller/transfer-learning:cu121
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -e
+          git clone https://github.com/raunavm/transferlearningsophon.git
+          cd transferlearningsophon
+
+          mkdir -p models/JetClassII_Sophon
+          curl -fSL -o models/JetClassII_Sophon/model.pt \
+            "https://huggingface.co/jet-universe/sophon/resolve/main/models/JetClassII_Sophon/model.pt"
+
+          PYTHONUNBUFFERED=1 python3 scripts/run_finetune_sweep.py \
+            --train-dir /data/features/train_100M \
+            --val-dir /data/features/val_5M \
+            --test-dir /data/features/test_20M \
+            --strategy partial_ft \
+            --checkpoint models/JetClassII_Sophon/model.pt \
+            --frozen-layers 4 \
+            --lr 1e-3 \
+            --backbone-lr 1e-4 \
+            --output-dir /data/results/partial_ft \
+            --epochs 100 \
+            --patience 10 \
+            --batch-size 128 \
+            --val-size 100000 \
+            --test-size 500000
+        resources:
+          requests:
+            memory: "64Gi"
+            cpu: "4"
+            nvidia.com/gpu: "1"
+          limits:
+            memory: "64Gi"
+            cpu: "8"
+            nvidia.com/gpu: "1"
+        volumeMounts:
+        - name: pvc
+          mountPath: /data
+        - name: dshm
+          mountPath: /dev/shm
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+              - key: nvidia.com/gpu.product
+                operator: In
+                values:
+                - NVIDIA-A100-SXM4-80GB
+                - NVIDIA-A100-PCIE-40GB
+                - NVIDIA-A40
+                - NVIDIA-RTX-A6000
+                - NVIDIA-RTX-A5000
+                - NVIDIA-TITAN-RTX
+      volumes:
+      - name: pvc
+        persistentVolumeClaim:
+          claimName: transfer-learning-vol
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: "16Gi"
