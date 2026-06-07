@@ -1,0 +1,43 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # Customize the suffix to identify the run, e.g. render-umap-INITIALS
+  name: render-figure-INITIALS
+  namespace: cms-ml
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: render
+        image: gitlab-registry.nrp-nautilus.io/escheuller/transfer-learning:cu121
+        command: ["/bin/bash", "-c"]
+        args:
+        - |
+          set -e
+          git clone https://github.com/raunavm/transferlearningsophon.git
+          cd transferlearningsophon
+          pip install umap-learn scikit-learn matplotlib
+
+          # Swap in whichever figure script you want to render. Options:
+          #   plot_scaling.py
+          #   plot_probing.py
+          #   plot_umap.py             --pretrained-dir ... --finetuned-dir ... --output /data/results/poster/umap
+          #   plot_roc_3strategies.py  --pretrained ... --partial-ckpt ... --full-ckpt ...
+          PYTHONUNBUFFERED=1 python3 scripts/plot_umap.py \
+            --pretrained-dir /data/embeddings_test_20M \
+            --finetuned-dir  /data/embeddings_ft_full_10M_seed42_test100k \
+            --n-per-class 3000 \
+            --seed 42 \
+            --cache  /data/results/poster/umap_coords_cache.npz \
+            --output /data/results/poster/umap_paired
+        resources:
+          requests: { memory: "32Gi", cpu: "4" }
+          limits:   { memory: "32Gi", cpu: "8" }
+        volumeMounts:
+        - { name: pvc, mountPath: /data }
+      volumes:
+      - name: pvc
+        persistentVolumeClaim:
+          claimName: transfer-learning-vol

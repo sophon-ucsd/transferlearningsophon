@@ -1,9 +1,0 @@
-model,observable,raw_R2,residualized_R2,delta,ci_lo,ci_hi
-pretrained,count_d0_gt_1sigma,0.643182,0.449104,0.194078,0.439545,0.460430
-pretrained,count_d0_gt_2sigma,0.680913,0.673044,0.007868,0.663209,0.679395
-pretrained,count_dz_gt_2sigma,0.619746,0.599517,0.020229,0.589190,0.606933
-pretrained,multiplicity,0.921244,0.334449,0.586796,0.325449,0.344768
-full_ft_3M_seed42,count_d0_gt_1sigma,0.227521,0.208368,0.019153,0.196670,0.218644
-full_ft_3M_seed42,count_d0_gt_2sigma,0.313573,0.326900,-0.013326,0.314354,0.339131
-full_ft_3M_seed42,count_dz_gt_2sigma,0.279393,0.287448,-0.008055,0.277326,0.299080
-full_ft_3M_seed42,multiplicity,0.289159,0.042436,0.246723,0.036846,0.047467

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Arm 3.3 STEP 2 — Linear ridge probing across observables.
+"""Linear ridge probing across jet observables.
 
 For each (model in [pretrained, fine-tuned]) x (observable in parquet):
   X = 128-d Sophon embedding
@@ -12,10 +12,10 @@ Output: probing_results.csv with columns
 
 Usage:
     python scripts/probe_observables.py \\
-        --observables results/arm3/observables_test_100k.parquet \\
+        --observables results/substructure_observables.npz \\
         --pretrained-dir /data/embeddings_test_20M \\
         --finetuned-dir  /data/embeddings_ft_full_3M_seed42_test100k \\
-        --output results/arm3/probing_results.csv \\
+        --output results/probing_results.csv \\
         --n-bootstrap 100 \\
         --seed 42
 """
@@ -166,7 +166,7 @@ def main():
     p.add_argument("--pretrained-dir", required=True)
     p.add_argument("--finetuned-dir", required=True)
     p.add_argument("--finetune-label", default="full_ft_3M_seed42")
-    p.add_argument("--output", default="results/arm3/probing_results.csv")
+    p.add_argument("--output", default="results/probing_results.csv")
     p.add_argument("--n-per-class", type=int, default=10000)
     p.add_argument("--n-bootstrap", type=int, default=100)
     p.add_argument("--seed", type=int, default=42)

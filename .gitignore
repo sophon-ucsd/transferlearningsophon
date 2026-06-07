@@ -1,34 +1,51 @@
-# Data files - too large for GitHub
+# Data and large artifacts
 /data/
 !src/data/
 val_5M/
 embeddings/
+embeddings_*/
 *.root
+substructure_*.npz
+
+# Generated outputs (regenerable from scripts)
+figures/
+results/**/*.pdf
+results/**/*.png
+results/**/*.npz
+results/**/*.pptx
+results_data/
+mlp_results/
+
+# Probing / inference intermediate files at root
+probing_results.json
+probing_test.json
+raw_sophon_baseline.json
+
+# Model checkpoints (downloaded from HuggingFace per README)
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.joblib
+*.pkl
+
+# Notebooks (this repo ships scripts only)
+*.ipynb
+
+# Internal guides (kept locally, not part of the public repo)
+CLUSTER_GUIDE.md
+SCRIPTS_GUIDE.md
 
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
 *.egg
-
-# Jupyter Notebook
-.ipynb_checkpoints/
+*.egg-info/
+build/
+dist/
+.eggs/
 
 # Virtual environments
 venv/
@@ -47,30 +64,24 @@ env/
 .DS_Store
 Thumbs.db
 
-# Model artifacts (ignore heavy results, allow figures+JSONs+small CSVs+md)
-results/**
-!results/arm1/
-!results/arm2/
-!results/arm3/
-!results/arm4/
-!results/main_plots/
-!results/arm1/**
-!results/arm2/**
-!results/arm3/**
-!results/arm4/**
-!results/main_plots/**
-results/arm*/observables_*.parquet
-results/arm*/observables_*.npz
-results/arm*/*.pt
-results/arm*/*.h5
-*.pt
-*.pth
-*.ckpt
-*.h5
-*.joblib
-*.pkl
-
-# Logs
+# Logs and run artifacts
 *.log
+lightning_logs/
 wandb/
 runs/
+
+# Claude Code and AI workflow artifacts
+.claude/
+CLAUDE.md
+AGENTS.md
+PLAN.md
+TODO.md
+NOTES.md
+SCRATCH.md
+BRAINSTORM.md
+*_plan.md
+*_notes.md
+*_scratchpad.md
+sprint_*.md
+meeting_*.md
+journal_*.md
