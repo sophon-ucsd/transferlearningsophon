@@ -32,10 +32,6 @@ raw_sophon_baseline.json
 # Notebooks (this repo ships scripts only)
 *.ipynb
 
-# Internal guides (kept locally, not part of the public repo)
-CLUSTER_GUIDE.md
-SCRIPTS_GUIDE.md
-
 # Python
 __pycache__/
 *.py[cod]
