@@ -75,4 +75,3 @@ networks/                       reference Sophon ParT definition
 results/sweep_results.csv       9 sizes × 3 strategies × seeds
 ```
 
-Authors: , . Mentors: ,  (UC San Diego).
