@@ -118,7 +118,7 @@ class SophonTransferModel(nn.Module):
         else:
             raise ValueError(f"Unknown head_type: {head_type!r}")
 
-    # ---- forward -----------------------------------------------------------
+    # forward
 
     def _forward_compat(
         self,
@@ -188,7 +188,7 @@ class SophonTransferModel(nn.Module):
             return logits, x_cls
         return logits
 
-    # ---- freeze / unfreeze -------------------------------------------------
+    # freeze / unfreeze
 
     def freeze_backbone(self) -> None:
         """Freeze all backbone params. Only self.mod.fc (the head) remains trainable."""
@@ -232,7 +232,7 @@ class SophonTransferModel(nn.Module):
         for param in self.mod.fc.parameters():
             param.requires_grad = True
 
-    # ---- param groups for discriminative LR --------------------------------
+    # param groups for discriminative LR
 
     def get_param_groups(
         self, backbone_lr: float, head_lr: float, weight_decay: float = 0.01
@@ -255,7 +255,7 @@ class SophonTransferModel(nn.Module):
             groups.append({"params": head_params, "lr": head_lr, "weight_decay": weight_decay})
         return groups
 
-    # ---- utilities ---------------------------------------------------------
+    # utilities
 
     @staticmethod
     def count_params(model: nn.Module) -> tuple[int, int]:
