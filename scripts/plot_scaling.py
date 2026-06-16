@@ -21,7 +21,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from plots.style import set_publishable_style, save_fig, STRATEGY_COLORS
+from plots.style import apply_style, save_fig, STRATEGY_COLORS
 
 
 PARTICLE_TRANSFORMER_AUC = 0.988
@@ -54,7 +54,7 @@ def fit_strategy(sizes: np.ndarray, aucs: np.ndarray):
 
 
 def main():
-    set_publishable_style()
+    apply_style()
     df = pd.read_csv("results/sweep_results.csv")
 
     fig, ax = plt.subplots(figsize=(8.0, 5.0))

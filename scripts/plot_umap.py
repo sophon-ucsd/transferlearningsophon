@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data.embedding_dataset import _load_dir
 from src.data.subsampler import stratified_subsample
-from plots.style import set_publishable_style, save_fig, CLASS_COLORS
+from plots.style import apply_style, save_fig, CLASS_COLORS
 
 LABEL_NAMES = ["QCD", "Hbb", "Hcc", "Hgg", "H4q", "Hqql",
                "Zqq", "Wqq", "Tbqq", "Tbl"]
@@ -107,7 +107,7 @@ def main():
                    help="Title for the right (fine-tuned) panel")
     args = p.parse_args()
 
-    set_publishable_style()
+    apply_style()
 
     cache = Path(args.cache)
     if cache.exists():

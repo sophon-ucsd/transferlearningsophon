@@ -19,9 +19,7 @@ except ImportError:
 
 from .subsampler import stratified_subsample
 
-# ---------------------------------------------------------------------------
-# Constants — must match inference_all_classes.py exactly
-# ---------------------------------------------------------------------------
+# Constants must match inference_all_classes.py exactly.
 MAX_PART = 128
 TREE_NAME = "tree"
 
@@ -43,43 +41,16 @@ LABEL_KEYS = [
 
 ALL_KEYS = PARTICLE_KEYS + SCALAR_KEYS + LABEL_KEYS
 
-# Class name (from filename) -> integer label (matching label_keys order)
+# Class name (from filename) -> integer label index. Kept only as a fallback;
+# we read labels from the ROOT file's one-hot LABEL_KEYS at runtime.
 CLASS_TO_LABEL = {
-    "HToBB": 0, "HToCC": 1, "HToGG": 2, "HToWW4Q": 3, "HToWW2Q1L": 4,
-    "TTBar": 5, "TTBarLep": 6, "WToQQ": 7, "ZToQQ": 8, "ZJetsToNuNu": 9,
+    "HToBB": 1, "HToCC": 2, "HToGG": 3, "HToWW4Q": 4, "HToWW2Q1L": 5,
+    "TTBar": 8, "TTBarLep": 9, "WToQQ": 7, "ZToQQ": 6, "ZJetsToNuNu": 0,
 }
-
-# Reverse: label index -> label key order matches LABEL_KEYS
-# label_QCD=0, label_Hbb=1, ... but wait — the label from argmax of label_keys
-# gives: QCD=0, Hbb=1, Hcc=2, Hgg=3, H4q=4, Hqql=5, Zqq=6, Wqq=7, Tbqq=8, Tbl=9
-# And CLASS_TO_LABEL maps filename -> these same indices. Verify below.
-# HToBB -> label_Hbb is at index 1 in LABEL_KEYS... but CLASS_TO_LABEL says 0.
-# Actually looking at the existing code: label_names = ["QCD","Hbb","Hcc","Hgg",
-# "H4q","Hqql","Zqq","Wqq","Tbqq","Tbl"] and get_truth_label does argmax over
-# label_keys which are [label_QCD, label_Hbb, ...]. So QCD=0, Hbb=1, etc.
-# But HToBB files have label_Hbb=1 → argmax=1. So HToBB -> label 1, not 0.
-# Let me fix CLASS_TO_LABEL to match the actual argmax:
-CLASS_TO_LABEL = {
-    "HToBB": 1,       # label_Hbb
-    "HToCC": 2,       # label_Hcc
-    "HToGG": 3,       # label_Hgg
-    "HToWW4Q": 4,     # label_H4q
-    "HToWW2Q1L": 5,   # label_Hqql
-    "TTBar": 8,        # label_Tbqq
-    "TTBarLep": 9,     # label_Tbl
-    "WToQQ": 7,        # label_Wqq
-    "ZToQQ": 6,        # label_Zqq
-    "ZJetsToNuNu": 0,  # label_QCD  (ZJetsToNuNu is QCD-like)
-}
-# NOTE: We won't hardcode labels — we read them from the ROOT file directly.
-# CLASS_TO_LABEL is only a fallback / for reference.
 
 NUM_CLASSES = 10
 
 
-# ---------------------------------------------------------------------------
-# Feature computation — copied verbatim from inference_all_classes.py
-# ---------------------------------------------------------------------------
 def _norm(x: np.ndarray, subtract: float, multiply: float,
           clip_lo: float = -5.0, clip_hi: float = 5.0) -> np.ndarray:
     return np.clip((x - subtract) * multiply, clip_lo, clip_hi)
@@ -151,9 +122,6 @@ def compute_sophon_features(
     return feats
 
 
-# ---------------------------------------------------------------------------
-# Per-file feature processing
-# ---------------------------------------------------------------------------
 def _process_file(fpath: str, max_particles: int = MAX_PART):
     """Load one ROOT file and compute all features/LV/masks/labels.
 
@@ -217,9 +185,6 @@ def _process_file(fpath: str, max_particles: int = MAX_PART):
     return all_feats, all_lv, all_masks, all_labels
 
 
-# ---------------------------------------------------------------------------
-# Dataset
-# ---------------------------------------------------------------------------
 class JetClassDataset(Dataset):
     """Pre-loaded JetClass ROOT dataset.
 
@@ -359,9 +324,6 @@ class LazyJetClassDataset(Dataset):
         return np.concatenate(all_labels)
 
 
-# ---------------------------------------------------------------------------
-# Collate function — transposes to model format
-# ---------------------------------------------------------------------------
 def jetclass_collate(batch: list[dict]) -> dict[str, torch.Tensor]:
     """Collate JetClassDataset samples into model-ready batches.
 
@@ -384,9 +346,6 @@ def jetclass_collate(batch: list[dict]) -> dict[str, torch.Tensor]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Data Module
-# ---------------------------------------------------------------------------
 def _discover_files(data_dir: str | Path) -> dict[str, list[Path]]:
     """Discover ROOT files per class in data_dir."""
     data_path = Path(data_dir)
