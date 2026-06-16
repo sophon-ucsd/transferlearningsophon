@@ -29,7 +29,7 @@ from src.data.embedding_dataset import _load_dir
 from src.data.subsampler import stratified_subsample
 from src.models.sophon_wrapper import SophonTransferModel
 from src.models.heads import MLPHead
-from plots.style import set_publishable_style, save_fig, CLASS_COLORS
+from plots.style import apply_style, save_fig, CLASS_COLORS
 
 LABEL_NAMES = ["QCD", "Hbb", "Hcc", "Hgg", "H4q", "Hqql",
                "Zqq", "Wqq", "Tbqq", "Tbl"]
@@ -39,8 +39,6 @@ CLASS_LABEL = {
     "HToWW2Q1L": 5, "ZToQQ": 6, "WToQQ": 7, "TTBar": 8, "TTBarLep": 9,
 }
 
-
-# ----------------------------------------------------------------------- IO
 
 def load_test_features(features_dir: Path, max_per_class: int):
     """Load class-balanced subset of pre-extracted .npy features."""
@@ -82,8 +80,6 @@ def load_test_embeddings(emb_dir: str, max_per_class: int, seed: int = 42):
     return emb[idx].astype(np.float32), lab[idx]
 
 
-# ----------------------------------------------------------------------- forward passes
-
 @torch.no_grad()
 def forward_frozen_mlp(mlp_path: str, emb: np.ndarray, device) -> np.ndarray:
     head = MLPHead(128, 10, [256], dropout=0.1).to(device).eval()
@@ -124,8 +120,6 @@ def forward_full_model(checkpoint: str, pretrained: str,
         out_probs.append(F.softmax(logits.float(), dim=-1).cpu().numpy())
     return np.concatenate(out_probs, axis=0)
 
-
-# ----------------------------------------------------------------------- ROC computation + plotting
 
 def per_class_curves(probs: np.ndarray, lab: np.ndarray):
     out = {}
@@ -178,19 +172,19 @@ def main():
     p.add_argument("--output", default="/data/results/poster/roc_3strategies_3M")
     args = p.parse_args()
 
-    set_publishable_style()
+    apply_style()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    # --- Frozen path -----------------------------------------------------
-    print("\n=== Frozen MLP (pretrained embeddings + 35K head, trained on 3M) ===")
+    # Frozen path
+    print("\nFrozen MLP (pretrained embeddings + 35K head, trained on 3M)")
     emb, lab_emb = load_test_embeddings(args.embeddings_dir, args.n_per_class, args.seed)
     print(f"  {len(emb):,} test embeddings")
     probs_frozen = forward_frozen_mlp(args.frozen_mlp, emb, device)
     curves_frozen, macro_frozen = per_class_curves(probs_frozen, lab_emb)
     print(f"  macro AUC = {macro_frozen:.4f}")
 
-    # --- Partial / Full FT paths (need raw features) --------------------
+    # Partial / Full FT paths (need raw features)
     print(f"\nLoading {args.n_per_class:,}/class test features from {args.features_dir}")
     t0 = time.time()
     feats, lorentz, masks, lab_feat = load_test_features(Path(args.features_dir),
@@ -198,19 +192,19 @@ def main():
     print(f"  total: {len(lab_feat):,} jets, features shape {feats.shape}, "
           f"loaded in {time.time()-t0:.0f}s")
 
-    print("\n=== Partial FT (3M, seed=42) ===")
+    print("\nPartial FT (3M, seed=42)")
     probs_partial = forward_full_model(args.partial_ckpt, args.pretrained,
                                        feats, lorentz, masks, device, args.batch_size)
     curves_partial, macro_partial = per_class_curves(probs_partial, lab_feat)
     print(f"  macro AUC = {macro_partial:.4f}")
 
-    print("\n=== Full FT (3M, seed=42) ===")
+    print("\nFull FT (3M, seed=42)")
     probs_full = forward_full_model(args.full_ckpt, args.pretrained,
                                     feats, lorentz, masks, device, args.batch_size)
     curves_full, macro_full = per_class_curves(probs_full, lab_feat)
     print(f"  macro AUC = {macro_full:.4f}")
 
-    # --- Cache curves so re-rendering doesn't need GPU ------------------
+    # Cache curves so re-rendering doesn't need GPU
     cache_arrays = {}
     for tag, curves in [("frozen", curves_frozen),
                         ("partial", curves_partial),
@@ -225,7 +219,7 @@ def main():
     np.savez(str(out_path) + "_curves.npz", **cache_arrays)
     print(f"\nCached curves -> {out_path}_curves.npz")
 
-    # --- Plot the 3-panel figure ----------------------------------------
+    # Plot the 3-panel figure
     fig, axes = plt.subplots(1, 3, figsize=(13.5, 4.8),
                              gridspec_kw=dict(wspace=0.18))
     draw_panel(axes[0], curves_frozen,  macro_frozen,
