@@ -1,13 +1,8 @@
-#!/usr/bin/env python3
-"""Pretrain Sophon from scratch on JetClass-II at variable class granularity.
+# 
+# Pretrain Sophon from scratch on JetClass-II at variable class granularity
+# beginning of raunavs b.1 task
+#  
 
-Usage:
-    python scripts/train_pretrain.py \
-        --train-dir /data/jetclass2/train \
-        --val-dir /data/jetclass2/val \
-        --num-classes 188 \
-        --output-dir /data/pretrain/sophon_188
-"""
 from __future__ import annotations
 
 import argparse
