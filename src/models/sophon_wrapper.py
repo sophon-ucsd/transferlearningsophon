@@ -110,10 +110,10 @@ class SophonTransferModel(nn.Module):
             self.mod.fc = nn.Sequential(nn.Linear(self.embed_dim, num_classes))
         elif head_type == "mlp":
             self.mod.fc = nn.Sequential(
-                nn.Linear(self.embed_dim, 256),
+                nn.Linear(self.embed_dim, 512), # changed from 256 to 512 to match the default on the repo
                 nn.ReLU(),
                 nn.Dropout(0.1),
-                nn.Linear(256, num_classes),
+                nn.Linear(512, num_classes), # ^^ this too
             )
         else:
             raise ValueError(f"Unknown head_type: {head_type!r}")

@@ -243,8 +243,12 @@ def evaluate(model, loader, device):
 
 
 def run_pretrain(train_dir, val_loader, num_classes, seed, device, output_dir,
-                 lr=1e-3, epochs=200, patience=20, batch_size=512,
-                 ema_decay=0.9999, materialize_train=False):
+                 lr=5e-4, # changed from 1e-3 to match the default 5e-4 on the repo
+                 epochs=80, # changed from 200 to match the default 80 on the repo
+                 patience=20, 
+                 batch_size=512,
+                 ema_decay=0.9999,
+                materialize_train=False):
     seed_everything(seed)
 
     print(f"  Loading training jets (all classes)...")
