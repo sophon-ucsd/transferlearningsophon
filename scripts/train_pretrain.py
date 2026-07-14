@@ -12,6 +12,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from torch.optim import AdamW
 
 import numpy as np
 import torch
@@ -243,8 +244,12 @@ def evaluate(model, loader, device):
 
 
 def run_pretrain(train_dir, val_loader, num_classes, seed, device, output_dir,
-                 lr=1e-3, epochs=200, patience=20, batch_size=512,
-                 ema_decay=0.9999, materialize_train=False):
+                 lr=5e-4, # changed from 1e-3 to match the default 5e-4 on the repo
+                 epochs=80, # changed from 200 to match the default 80 on the repo
+                 patience=20, 
+                 batch_size=512,
+                 ema_decay=0.9999,
+                materialize_train=False):
     seed_everything(seed)
 
     print(f"  Loading training jets (all classes)...")
@@ -263,7 +268,17 @@ def run_pretrain(train_dir, val_loader, num_classes, seed, device, output_dir,
 
     ema = EMA(model, decay=ema_decay)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+    # optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+    ## changing this to use ranger instead, AdamW declaration up top
+
+    try:
+        from ranger import Ranger
+        optimizer = Ranger(model.parameters(), lr=lr, weight_decay=0.01)
+        print("using ranger optimizer")
+    except ImportError:
+        optimizer = AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+        print("ranger not found, using AdamW optimizer instead")
+
     warmup_epochs = min(10, max(1, epochs // 20))
     warmup = torch.optim.lr_scheduler.LinearLR(
         optimizer, start_factor=0.05, end_factor=1.0, total_iters=warmup_epochs)
